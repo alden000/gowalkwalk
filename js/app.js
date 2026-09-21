@@ -618,6 +618,23 @@ function buildRoute() {
   state.layers.km = km.addTo(state.map);
 }
 
+/**
+ * A photo for a popup, where OpenStreetMap had one, with the credit its licence
+ * requires.
+ *
+ * Loaded lazily and only when the popup opens, so the images cost nothing until
+ * someone actually taps a checkpoint — and a broken or blocked one removes
+ * itself rather than leaving a grey box where a summit should be.
+ */
+function photoHtml(photo) {
+  if (!photo?.src) return '';
+  return `<figure class="pop-photo">
+    <img src="${escapeHtml(photo.src)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"
+         onerror="this.closest('figure').remove()">
+    ${photo.credit ? `<figcaption>${escapeHtml(photo.credit)}</figcaption>` : ''}
+  </figure>`;
+}
+
 function buildCheckpointMarkers() {
   const group = L.layerGroup();
   state.checkpoints.forEach((cp, i) => {
@@ -628,12 +645,13 @@ function buildCheckpointMarkers() {
     const remaining = state.route.total - cp.along;
     L.marker([cp.lat, cp.lon], { icon: checkpointIcon(kind, label), zIndexOffset: 600 })
       .bindPopup(
+        photoHtml(cp.photo) +
         `<div class="pop-t">${label ? `${label}. ` : ''}${escapeHtml(cp.name)}</div>` +
         (cp.note ? `<div class="pop-d">${escapeHtml(cp.note)}</div>` : '') +
         `<div class="pop-m">km ${(cp.along / 1000).toFixed(2)} · ${formatDistance(remaining)} to finish` +
         (cp.offset > 40 ? ` · ${cp.offset} m off the path` : '') +
         (cp.source === 'file' ? ' · from your file' : '') + '</div>',
-        { maxWidth: 300 })
+        { maxWidth: cp.photo ? 280 : 300 })
       .addTo(group);
   });
   state.layers.checkpoints = group.addTo(state.map);
@@ -698,11 +716,12 @@ function buildPois() {
         category: cat,
         zIndexOffset: cat === 'aed' ? 500 : 0,
       }).bindPopup(
+        photoHtml(p.photo) +
         `<div class="pop-t">${escapeHtml(p.name === meta.label ? meta.label : p.name)}</div>` +
         (p.detail ? `<div class="pop-d">${escapeHtml(p.detail)}</div>` : '') +
         (p.note ? `<div class="pop-n">${escapeHtml(p.note)}</div>` : '') +
         `<div class="pop-m">km ${(p.along / 1000).toFixed(2)} on route · ${p.offset} m off the path</div>`,
-        { maxWidth: p.note ? 280 : 300 }));
+        { maxWidth: (p.note || p.photo) ? 280 : 300 }));
 
     state.markersByCategory[cat] = markers;
     cluster.addLayers(markers);

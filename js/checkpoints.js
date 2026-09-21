@@ -84,6 +84,7 @@ export function buildCheckpoints(doc, waypoints = [], landmarks = []) {
       id: l.id,
       name: l.name,
       note: l.note || l.kind || '',
+      photo: l.photo || null,
       source: 'osm',
       rank: l.rank,
       along: l.along,

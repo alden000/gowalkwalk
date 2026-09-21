@@ -90,6 +90,11 @@ route. Here they are assembled, in this order of trust:
    summits, waterfalls, cave entrances, monuments, memorials, ruins, towers,
    museums, nature reserves and the like.
 
+Where OpenStreetMap carries a `wikimedia_commons` or `image` tag — mappers
+regularly do on summits, viewpoints, monuments and huts — the photograph appears
+in the popup, which is as close as an uploaded route can get to the reference
+app's hand-curated checkpoint photos.
+
 Landmarks are ranked (a summit outranks a named flowerbed) and thinned greedily
 by rank, so a cluster of three benches at the trailhead cannot crowd out the
 viewpoint, and they stay spread along the route. Anything within 150 m of either

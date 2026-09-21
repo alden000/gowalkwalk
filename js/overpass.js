@@ -141,6 +141,40 @@ function detailFor(cat, t) {
   return bits.join(' · ');
 }
 
+/**
+ * A photo of the place, where OpenStreetMap carries one.
+ *
+ * The reference app showed a photograph of each checkpoint in its popup, from a
+ * file curated for that one route. Nobody can curate an uploaded route, but
+ * mappers regularly tag `wikimedia_commons` or `image` on exactly the things
+ * that become checkpoints here — summits, viewpoints, monuments, huts — so the
+ * feature survives for the places that have one.
+ *
+ * Commons files go through Special:FilePath, which is the documented stable
+ * redirect to the current file and takes a width, so a popup does not pull down
+ * a 12 megapixel original. An `image` URL is somebody's own hosting and is only
+ * taken over HTTPS: the app is served over HTTPS and a plain-HTTP image is
+ * blocked as mixed content anyway.
+ */
+function photoFor(t) {
+  const commons = t.wikimedia_commons || t.image_commons;
+  if (commons && /^File:/i.test(commons)) {
+    const file = encodeURIComponent(commons.replace(/^File:/i, '').replace(/ /g, '_'));
+    return {
+      src: `https://commons.wikimedia.org/wiki/Special:FilePath/${file}?width=560`,
+      credit: 'Wikimedia Commons',
+    };
+  }
+  if (t.image && /^https:\/\//.test(t.image)) {
+    return { src: t.image, credit: hostOf(t.image) };
+  }
+  return null;
+}
+
+function hostOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
 const FALLBACK_NAME = {
   aed: 'AED', toilet: 'Toilet', water: 'Drinking water',
   vending: 'Vending machine', shelter: 'Shelter', parking: 'Car park',
@@ -286,6 +320,7 @@ out center tags;`;
           id: key,
           name: nameFor(cat, tags),
           detail: detailFor(cat, tags),
+          photo: photoFor(tags),
           lat: Math.round(pos[0] * 1e6) / 1e6,
           lon: Math.round(pos[1] * 1e6) / 1e6,
           offset: Math.round(offset),
@@ -305,6 +340,7 @@ out center tags;`;
         kind: landmarkKind(tags),
         note: [tags.name ? landmarkKind(tags) : '', tags.description, tags.inscription]
           .filter(Boolean).join(' · '),
+        photo: photoFor(tags),
         rank,
         lat: Math.round(pos[0] * 1e6) / 1e6,
         lon: Math.round(pos[1] * 1e6) / 1e6,

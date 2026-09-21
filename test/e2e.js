@@ -82,7 +82,8 @@ function overpassPayload(centreLat, centreLon) {
       at(0.0056, 0.0012, { amenity: 'shelter', shelter_type: 'public_transport' }),  // must be ignored
       at(0.0000, -0.0070, { tourism: 'viewpoint', name: 'Bukit Kallang' }),
       at(-0.0055, 0.0003, { historic: 'memorial', name: 'Lim Bo Seng Memorial' }),
-      at(0.0040, -0.0050, { natural: 'peak', name: 'Little Hill' }),
+      at(0.0040, -0.0050, { natural: 'peak', name: 'Little Hill',
+        wikimedia_commons: 'File:A little hill.jpg' }),
       at(0.0000, 0.5000, { amenity: 'toilets' }),                                     // far away: filtered out
       { type: 'way', id: 77, center: { lat: centreLat + 0.0050, lon: centreLon + 0.0025 },
         tags: { leisure: 'park', name: 'Reservoir Park' } },
@@ -233,6 +234,16 @@ function check(name, ok, extra = '') {
   check('vending found', counts.vending === 1);
   check('bus shelter excluded, picnic shelter kept', counts.shelter === 1);
   check('car park found', counts.parking === 1);
+
+  // a checkpoint OpenStreetMap has a photograph of shows it in its popup
+  const photo = await page.evaluate(async () => {
+    const m = await import('/js/store.js');
+    const rec = await m.loadRoute(m.lastRouteId());
+    return rec.checkpoints.find(c => c.name === 'Little Hill')?.photo || null;
+  });
+  check('Commons photo kept for a landmark that has one',
+    photo?.src === 'https://commons.wikimedia.org/wiki/Special:FilePath/A_little_hill.jpg?width=560',
+    JSON.stringify(photo));
 
   const cps = await page.evaluate(() => document.querySelectorAll('#bar-ticks i').length);
   check('landmarks became checkpoints', cps === 4, `${cps} intermediate checkpoints`);
