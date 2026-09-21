@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<title>GoWalkWalk</title>
+<meta name="description" content="Upload your own GPX or KML route and get a live trail map: AEDs, toilets, water, vending machines, shelters and landmarks along the way, with progress tracking and weather.">
+<meta name="theme-color" content="#0d1412">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GoWalkWalk">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="vendor/markercluster.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body class="no-route">
+
+<div id="map" role="application" aria-label="Route map"></div>
+
+<!-- ── the route library: what the app opens on ──────────────────── -->
+<main id="home" class="screen">
+  <div class="home-inner">
+    <header class="home-head">
+      <img class="home-logo" src="icons/icon.svg" alt="" width="64" height="64">
+      <div>
+        <h1>GoWalkWalk</h1>
+        <p class="home-sub">Bring your own route. Get the facilities on it.</p>
+      </div>
+    </header>
+
+    <label id="drop" class="drop" for="file">
+      <input type="file" id="file" accept=".gpx,.kml,.kmz,application/gpx+xml,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden>
+      <svg class="drop-ico" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3"/>
+      </svg>
+      <span class="drop-t">Choose a GPX or KML file</span>
+      <span class="drop-d">…or drop one here. The start and finish come from the file.</span>
+      <span class="drop-f">.gpx · .kml · .kmz</span>
+    </label>
+    <p class="home-err" id="home-err" hidden role="alert"></p>
+
+    <section class="home-block" id="recent-block" hidden>
+      <h2>Your routes</h2>
+      <ul class="routes" id="routes"></ul>
+      <p class="fineprint" id="storage-note"></p>
+    </section>
+
+    <section class="home-block">
+      <h2>What you get</h2>
+      <ul class="feats">
+        <li><b>Facilities along the way</b> — AEDs, toilets, drinking water, drink vending machines, shelters and car parks, from OpenStreetMap, each one measured as a walk along your route rather than as the crow flies.</li>
+        <li><b>Landmarks and attractions</b> — the named viewpoints, summits, waterfalls, monuments and huts your route passes, turned into checkpoints. Pins in your own file are kept as checkpoints too.</li>
+        <li><b>Live progress</b> — how far you have walked, how far is left, pace and a finish estimate, held across a reload.</li>
+        <li><b>Weather and air quality</b> — the forecast for where the route actually is, with a lightning, heat and haze warning.</li>
+        <li><b>Offline</b> — save the map along the route before you set off, and the whole app works with no signal.</li>
+        <li><b>Emergency card</b> — one tap for who to call, where you are in a form you can read out, and the nearest AED, water, toilet and shelter.</li>
+      </ul>
+    </section>
+
+    <footer class="home-foot">
+      <p>Your route file is read on this device and never uploaded. Facilities come from
+         <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> (ODbL); map tiles and
+         weather from the providers named on the map.</p>
+    </footer>
+  </div>
+</main>
+
+<!-- ── import progress ──────────────────────────────────────────── -->
+<div id="import" class="screen import" hidden role="dialog" aria-modal="true" aria-labelledby="imp-title">
+  <div class="imp-card">
+    <h2 id="imp-title">Reading your route</h2>
+    <p class="imp-file" id="imp-file"></p>
+    <ol class="imp-steps" id="imp-steps">
+      <li data-step="read">Reading the file</li>
+      <li data-step="places">Searching OpenStreetMap along the route</li>
+      <li data-step="elevation">Filling in the climbing</li>
+      <li data-step="build">Working out the checkpoints</li>
+    </ol>
+    <div class="imp-bar"><div class="imp-fill" id="imp-fill"></div></div>
+    <p class="fineprint" id="imp-note">This takes a few seconds and only happens once per route.</p>
+    <button type="button" class="btn subtle" id="imp-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- ── top: progress along the route ─────────────────────────────── -->
+<header id="hud" class="panel">
+  <div class="hud-row">
+    <button id="btn-home" class="icon-btn small" title="Your routes" aria-label="Back to your routes">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+    </button>
+    <div class="hud-title">
+      <h1 id="hud-name">Route</h1>
+      <p id="hud-status">Waiting for GPS…</p>
+    </div>
+    <button id="hud-toggle" class="icon-btn" aria-expanded="true" aria-controls="hud-body" title="Collapse panel">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+    </button>
+  </div>
+
+  <div id="hud-body">
+    <div class="stats">
+      <div class="stat"><span class="stat-v" id="st-done">–</span><span class="stat-l">done</span></div>
+      <div class="stat"><span class="stat-v" id="st-left">–</span><span class="stat-l">to finish</span></div>
+      <div class="stat"><span class="stat-v" id="st-pct">–</span><span class="stat-l">complete</span></div>
+      <div class="stat"><span class="stat-v" id="st-next">–</span><span class="stat-l" id="st-next-l">next CP</span></div>
+    </div>
+  </div>
+
+  <!-- outside #hud-body: progress stays on screen when the panel is minimised -->
+  <div class="bar" id="bar" aria-hidden="true">
+    <div class="bar-fill" id="bar-fill"></div>
+    <div class="bar-ticks" id="bar-ticks"></div>
+    <div class="bar-me" id="bar-me"></div>
+  </div>
+
+  <p class="fineprint" id="hud-note"></p>
+</header>
+
+<!-- ── right: map controls ───────────────────────────────────────── -->
+<div id="controls">
+  <button class="icon-btn" id="btn-zoom-in" title="Zoom in" aria-label="Zoom in">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+  <button class="icon-btn" id="btn-zoom-out" title="Zoom out" aria-label="Zoom out">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+  </button>
+  <button class="icon-btn" id="btn-locate" title="Centre on my position" aria-label="Centre on my position">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.5"/><path d="M12 1.6v3M12 19.4v3M22.4 12h-3M4.6 12h-3"/></svg>
+  </button>
+  <button class="icon-btn toggle" id="btn-follow" title="Follow me" aria-label="Follow me" aria-pressed="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+  </button>
+  <button class="icon-btn" id="btn-fit" title="Fit whole route" aria-label="Fit whole route">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+  </button>
+  <button class="icon-btn toggle" id="btn-layers" title="Map layers &amp; markers" aria-label="Map layers and markers" aria-pressed="false" aria-controls="layers">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3.5 12.5L12 17l8.5-4.5"/></svg>
+  </button>
+  <button class="icon-btn toggle sos" id="btn-sos" title="Emergency: my location &amp; nearest help" aria-label="Emergency: my location and nearest help" aria-pressed="false" aria-controls="sos">
+    <span aria-hidden="true">SOS</span>
+  </button>
+</div>
+
+<!-- ── emergency card ────────────────────────────────────────────── -->
+<section id="sos" class="panel" hidden role="dialog" aria-modal="false" aria-labelledby="sos-title">
+  <div class="sos-head">
+    <h2 id="sos-title">Emergency</h2>
+    <button id="sos-close" class="icon-btn small" title="Close" aria-label="Close emergency card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+
+  <div class="sos-calls" id="sos-calls"></div>
+  <button type="button" id="sos-edit" class="btn subtle small">Set your own emergency contact</button>
+  <form id="sos-form" class="sos-form" hidden>
+    <label>Name<input type="text" id="sos-contact-name" placeholder="Event marshal" autocomplete="off"></label>
+    <label>Number<input type="tel" id="sos-contact-tel" placeholder="+65 9123 4567" autocomplete="off"></label>
+    <div class="sos-form-actions">
+      <button type="submit" class="btn">Save</button>
+      <button type="button" class="btn subtle" id="sos-contact-clear">Remove</button>
+    </div>
+  </form>
+
+  <h3>Where you are</h3>
+  <p id="sos-where" class="sos-where">Waiting for a GPS fix…</p>
+  <div class="sos-actions">
+    <button type="button" id="sos-copy" class="btn">Copy location</button>
+    <button type="button" id="sos-share" class="btn" hidden>Share…</button>
+  </div>
+
+  <h3>Nearest help</h3>
+  <ul class="sos-list" id="sos-near"></ul>
+  <p class="fineprint" id="sos-note">Distances follow the route from your last fix. Tap a row to see it on the map.</p>
+</section>
+
+<!-- ── layers drawer ─────────────────────────────────────────────── -->
+<section id="layers" class="panel" hidden aria-label="Map layers and markers">
+  <h2>Base map</h2>
+  <div class="seg" id="basemaps" role="radiogroup" aria-label="Base map"></div>
+  <p class="fineprint" id="basemap-note"></p>
+
+  <h2>Markers</h2>
+  <div class="checks" id="overlays"></div>
+  <p class="fineprint" id="poi-note"></p>
+
+  <h2>Route</h2>
+  <div class="checks" id="route-overlays"></div>
+
+  <h2>Offline</h2>
+  <button type="button" id="btn-save-map" class="btn">Save map for offline</button>
+  <button type="button" id="btn-clear-map" class="btn subtle" hidden>Clear saved maps</button>
+  <p class="fineprint" id="save-note"></p>
+
+  <h2>This route</h2>
+  <div class="checks">
+    <button type="button" id="btn-refresh-pois" class="btn subtle">Search OpenStreetMap again</button>
+    <button type="button" id="btn-export" class="btn subtle">Export route as GPX</button>
+    <button type="button" id="btn-delete-route" class="btn subtle danger">Remove this route</button>
+  </div>
+  <p class="fineprint" id="route-note"></p>
+
+  <h2>Line colours</h2>
+  <ul class="legend">
+    <li><span class="sw-line done"></span>Walked so far</li>
+    <li><span class="sw-line todo"></span>Still to walk</li>
+    <li><span class="sw-line trail"></span>Other trails &amp; paths</li>
+  </ul>
+</section>
+
+<!-- ── bottom: weather & air quality ─────────────────────────────── -->
+<section id="weather" class="panel" data-risk="ok" aria-label="Weather and air quality along the route">
+  <!-- always visible, always refreshing: the one-line summary -->
+  <button id="wx-toggle" class="wx-bar" aria-expanded="true" aria-controls="wx-body">
+    <span class="wx-bar-ico" id="wx-bar-ico"></span>
+    <span class="wx-bar-main">
+      <span class="wx-bar-temp" id="wx-bar-temp">–</span>
+      <span class="wx-bar-txt" id="wx-bar-txt">Loading the forecast…</span>
+    </span>
+    <span class="wx-bar-aq" id="wx-bar-aq"></span>
+    <svg class="wx-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+  </button>
+
+  <!-- risk banner: shown in both the collapsed and expanded states -->
+  <p id="wx-alert" class="wx-alert" hidden role="status"></p>
+
+  <div id="wx-body">
+    <div class="wx-cards" id="wx-cards">
+      <div class="wx-card skeleton"></div><div class="wx-card skeleton"></div>
+      <div class="wx-card skeleton"></div><div class="wx-card skeleton"></div>
+    </div>
+
+    <h2 class="wx-h">Air quality</h2>
+    <div class="wx-air" id="wx-air"></div>
+
+    <ul class="wx-alerts" id="wx-alerts" hidden></ul>
+
+    <div class="wx-foot">
+      <p class="fineprint" id="wx-note">Loading the forecast…</p>
+      <button id="wx-refresh" class="icon-btn small" title="Refresh now" aria-label="Refresh weather now">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+      </button>
+    </div>
+  </div>
+</section>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/markercluster.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

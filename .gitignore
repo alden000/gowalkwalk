@@ -1,0 +1,8 @@
+# Test dependencies and the route files the test generates for itself
+test/node_modules/
+test/package-lock.json
+test/tmp/
+
+# Python bytecode from the icon tools
+__pycache__/
+*.pyc

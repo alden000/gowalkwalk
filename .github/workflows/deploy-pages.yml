@@ -1,0 +1,54 @@
+name: Deploy to GitHub Pages
+
+# The app is the repository root — plain static files, no build step — so the
+# workflow copies it to _site, drops the things that are not part of the
+# published site, and publishes that. The URL is
+# https://<owner>.github.io/<repo>/ .
+
+on:
+  push:
+    branches:
+      - claude/gpx-kml-route-upload-30ojt8
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deployment finish rather than cancelling it half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Assemble the site
+        run: |
+          # rsync rather than cp, so the destination can live inside the source
+          # without the copy walking into itself
+          rsync -a --exclude '.git' --exclude '.github' --exclude 'test' \
+                --exclude 'tools' --exclude '_site' ./ _site/
+          ls -la _site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload the site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

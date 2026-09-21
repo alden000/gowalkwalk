@@ -1,0 +1,11 @@
+{
+  "name": "gowalkwalk-test",
+  "private": true,
+  "description": "End-to-end test for the GoWalkWalk PWA. Drives a real browser against a stubbed network.",
+  "scripts": {
+    "test": "node e2e.js"
+  },
+  "dependencies": {
+    "playwright-core": "1.55.0"
+  }
+}
