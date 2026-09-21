@@ -546,7 +546,8 @@ function check(name, ok, extra = '') {
   const survived = await page.waitForSelector('body:not(.no-route)', { timeout: 60000 })
     .then(() => true).catch(() => false);
   const hangSeconds = (Date.now() - hangStarted) / 1000;
-  check('a hanging mirror is abandoned, not waited on', survived && hangSeconds < 45,
+  check('a hanging mirror does not hold up a healthy one',
+    survived && hangSeconds < 25,
     `${hangSeconds.toFixed(1)}s, ${hungCalls} hung request(s)`);
   check('the healthy mirror still supplies the facilities',
     await page.evaluate(() => document.querySelectorAll('.leaflet-marker-icon').length) > 3);

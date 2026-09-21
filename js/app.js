@@ -339,15 +339,20 @@ async function importFile(file) {
     importStep('places', 'active');
     $('#imp-skip').hidden = false;
     try {
+      const searchStarted = Date.now();
       const places = await fetchPlaces(doc, {
         signal: abort.signal,
         // Naming the mirror matters more than it looks. The search is the slow
-        // step, and a public Overpass instance can sit on a query for half a
-        // minute before another one answers in two seconds; a line that changes
-        // as each is tried is the difference between "working" and "hung".
+        // step, and a public Overpass instance genuinely takes about
+        // twenty-five seconds to answer at a busy moment; a line that changes
+        // as each is asked is the difference between "working" and "hung".
+        // Past ten seconds it also says so outright, because a wait nobody has
+        // been warned about is the one people give up on.
         onProgress: (done, total, host) => importStep('places', 'active',
           [total > 1 ? `Section ${Math.min(done + 1, total)} of ${total}` : null,
-            host ? `asking ${host}` : 'Searching OpenStreetMap along the route…']
+            host ? `asking ${host}` : 'Searching OpenStreetMap along the route…',
+            Date.now() - searchStarted > 10000
+              ? 'the public mirrors often take half a minute' : null]
             .filter(Boolean).join(' · ')),
       });
       const merged = await withSgAeds(doc, places.facilities, { signal: abort.signal });

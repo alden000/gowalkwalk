@@ -43,16 +43,28 @@ const TIMEOUT_S = 90;
 
 // What *we* are willing to wait for an answer.
 //
-// A busy mirror does not turn a query away — it accepts the connection and
-// queues it, and without a deadline the app waits for that queue for ever. Two
-// rounds: a short one that moves briskly through all three mirrors and finds
-// whichever is healthy right now, then a patient one for the case where they
-// are all merely slow. Worst case, with every mirror hanging, is a bounded two
-// minutes during which the card names a different host every few seconds and
-// Cancel works throughout — rather than an unbounded wait saying nothing.
-const ROUND_TIMEOUTS_MS = [12000, 30000];
-// A pause between rounds, so a second pass is not simply the first pass again.
-const ROUND_PAUSE_MS = 1200;
+// Measured against a public mirror, on a corridor around a 1.2 km loop: a
+// single-statement query takes about 25 seconds, and it takes about 25 seconds
+// whatever shape it is — a bounding box and a string of `around` points come
+// back within half a second of each other. That time is the server's queue,
+// not its arithmetic. These are free instances carrying the world's OSM
+// queries, and twenty-five seconds is simply what asking one costs at a busy
+// moment.
+//
+// The first version of this gave each mirror twelve seconds before moving on,
+// which could not succeed: it timed out all three, then tried again at thirty,
+// by which point the mirrors were busy with the queries it had already
+// abandoned. A walker saw "OpenStreetMap did not answer" on import and then
+// watched the very same search return instantly when they pressed retry — the
+// server had finished the abandoned query in the meantime.
+//
+// So: a generous cap per attempt, and mirrors are hedged rather than raced to
+// death. The first is asked; if it has not answered in HEDGE_AFTER_MS the
+// second is asked *alongside* it, then the third, and whichever answers first
+// wins. A slow mirror that is working is no longer killed in favour of one
+// that may be slower still, and a fast one still answers in a second.
+const ATTEMPT_TIMEOUT_MS = 60000;
+const HEDGE_AFTER_MS = 9000;
 
 // Whichever mirror last answered, tried first next time.
 //
@@ -244,58 +256,94 @@ function corridorChunks(doc) {
   return chunks;
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 /**
- * Run one Overpass query, moving on when a mirror will not answer.
+ * Run one Overpass query against the mirrors, hedged.
  *
- * Public Overpass instances shed load in two different ways, and both have to
- * be handled or a walker at a trailhead gets nothing. Some turn a query away
- * with 429 or 504, which fails fast and is easy. Others accept it and queue it
- * behind everything else, answering in their own time or not at all — and that
- * one, left alone, is what makes the app look hung.
+ * The first mirror is asked. If it has not answered within HEDGE_AFTER_MS the
+ * next is asked as well — not instead — and so on, and the first answer to
+ * arrive wins and cancels the rest. A mirror that fails outright frees the next
+ * one immediately rather than waiting out the hedge.
  *
- * Every attempt therefore has a deadline, and the mirrors are swept twice: a
- * brisk pass that finds whichever is healthy right now, then a patient pass for
- * when they are all merely slow. `onAttempt` reports which host is being tried
- * so the screen can say so rather than sitting on one unchanging line.
+ * This is deliberately kinder to a slow mirror than the sweep it replaces. On
+ * these services, slow and broken look identical for the first half-minute, and
+ * the only way to tell them apart is to let one keep working while asking
+ * somebody else too.
+ *
+ * `onAttempt` reports the host and how many requests are in flight, so the
+ * screen can say what is happening rather than sitting on one unchanging line.
  */
-async function runQuery(body, { signal, onAttempt } = {}) {
-  let lastError = null;
-  for (let round = 0; round < ROUND_TIMEOUTS_MS.length; round++) {
-    if (round) await sleep(ROUND_PAUSE_MS);
-    for (const endpoint of mirrors()) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+function runQuery(body, { signal, onAttempt } = {}) {
+  const hosts = mirrors();
+  const failures = [];
+  const controllers = [];
+  let launched = 0;
+  let outstanding = 0;
+  let settled = false;
+  let hedgeTimer = null;
+
+  return new Promise((resolve, reject) => {
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hedgeTimer);
+      // the losers are of no further interest, and leaving them running would
+      // keep a mirror busy on an answer nobody will read
+      for (const c of controllers) c.abort(new DOMException('Superseded', 'AbortError'));
+      fn(value);
+    };
+
+    const launchNext = () => {
+      if (settled || launched >= hosts.length) return;
+      const endpoint = hosts[launched++];
       const host = new URL(endpoint).host;
-      onAttempt?.(host, round);
-      try {
-        const res = await fetchWithTimeout(endpoint, {
-          method: 'POST',
-          body: new URLSearchParams({ data: body }),
-          timeoutMs: ROUND_TIMEOUTS_MS[round],
-          signal,
-        });
+
+      const ac = new AbortController();
+      controllers.push(ac);
+      if (signal) {
+        if (signal.aborted) ac.abort(signal.reason);
+        else signal.addEventListener('abort', () => ac.abort(signal.reason), { once: true });
+      }
+
+      outstanding++;
+      onAttempt?.(host, outstanding);
+
+      fetchWithTimeout(endpoint, {
+        method: 'POST',
+        body: new URLSearchParams({ data: body }),
+        timeoutMs: ATTEMPT_TIMEOUT_MS,
+        signal: ac.signal,
+      }).then(async res => {
         if (res.status === 429 || res.status === 503 || res.status === 504) {
-          lastError = new Error(`${host} is busy (HTTP ${res.status})`);
-          continue;
+          throw new Error(`${host} is busy (HTTP ${res.status})`);
         }
         if (!res.ok) throw new Error(`${host}: HTTP ${res.status}`);
         const answer = await res.json();
         // Remembered only on a genuine answer, so the next chunk starts with a
         // mirror known to be alive rather than at the top of the list again.
         preferred = endpoint;
-        return answer;
-      } catch (err) {
+        finish(resolve, answer);
+      }).catch(err => {
+        outstanding--;
+        if (settled) return;
         // The walker tapping Cancel is not a mirror failing; it stops everything.
-        if (cancelled(err, signal)) throw err;
-        lastError = err.name === 'TimeoutError'
-          ? new Error(`${host} did not answer within `
-            + `${ROUND_TIMEOUTS_MS[round] / 1000} s`)
-          : err;
+        if (cancelled(err, signal)) return finish(reject, err);
+        failures.push(err.name === 'TimeoutError'
+          ? `${host} did not answer within ${ATTEMPT_TIMEOUT_MS / 1000} s`
+          : `${host}: ${err.message}`);
+        if (launched < hosts.length) launchNext();
+        else if (outstanding === 0) {
+          finish(reject, new Error(`No OpenStreetMap mirror answered — ${failures.join('; ')}`));
+        }
+      });
+
+      if (launched < hosts.length) {
+        clearTimeout(hedgeTimer);
+        hedgeTimer = setTimeout(launchNext, HEDGE_AFTER_MS);
       }
-    }
-  }
-  throw lastError || new Error('No OpenStreetMap mirror answered.');
+    };
+
+    launchNext();
+  });
 }
 
 /** Element → a position: nodes carry one, ways and relations get their centre. */
@@ -351,8 +399,8 @@ out center tags;`;
 
     const data = await runQuery(query, {
       signal,
-      onAttempt: (host, round) => onProgress?.(i, chunks.length,
-        round ? `${host} — second try` : host),
+      onAttempt: (host, inFlight) => onProgress?.(i, chunks.length,
+        inFlight > 1 ? `${host} and ${inFlight - 1} more` : host),
     });
     for (const el of data.elements || []) {
       const key = `${el.type}${el.id}`;
@@ -429,8 +477,8 @@ way(around:${TRAIL_RADIUS_M},${chunks[i]})["highway"~"^(path|footway|track|steps
 out geom;`;
     const data = await runQuery(query, {
       signal,
-      onAttempt: (host, round) => onProgress?.(i, chunks.length,
-        round ? `${host} — second try` : host),
+      onAttempt: (host, inFlight) => onProgress?.(i, chunks.length,
+        inFlight > 1 ? `${host} and ${inFlight - 1} more` : host),
     });
     for (const el of data.elements || []) {
       if (seen.has(el.id) || !el.geometry || el.geometry.length < 2) continue;
