@@ -283,6 +283,7 @@ function check(name, ok, extra = '') {
   }));
   check('Singapore emergency numbers', sos.calls.includes('tel:995'), sos.calls.join(' '));
   check('nearest help listed', sos.rows >= 4, `${sos.rows} rows`);
+
   check('position reported', /\d+\.\d+, \d+\.\d+/.test(sos.where), sos.where.slice(0, 60));
   check('contact form stays shut until asked for', !(await page.isVisible('#sos-form')));
   await page.click('#sos-edit');
@@ -605,6 +606,21 @@ function check(name, ok, extra = '') {
   await page.waitForTimeout(400);
   check('and stays dismissed next time the route is opened',
     await page.evaluate(() => document.querySelector('#route-alert').hidden));
+
+  // the emergency card must say what is missing, not leave the row out
+  await page.click('#btn-sos');
+  await page.waitForSelector('#sos:not([hidden])');
+  await page.waitForTimeout(600);
+  const empties = await page.evaluate(() =>
+    [...document.querySelectorAll('#sos-near li.none-row')].map(li =>
+      li.querySelector('.t').textContent.replace(/\s+/g, ' ').trim()));
+  check('the emergency card names every category it has nothing for',
+    empties.length === 4
+    && empties.some(t => t.startsWith('No AED on this route'))
+    && empties.some(t => t.startsWith('No drinking water on this route'))
+    && empties.every(t => /none is mapped/i.test(t)),
+    empties.join(' | '));
+  await page.click('#sos-close');
   emptyResults = false;
 
   // back to the fully-populated route, so the offline check below is testing

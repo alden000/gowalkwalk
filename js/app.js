@@ -1761,6 +1761,18 @@ function nearestPoi(cat, lat, lon, anchor) {
   return best;
 }
 
+// Written out rather than lower-cased from the category label: "No aed on this
+// route" reads as a typo and "No Drinking water" as a label pasted into a
+// sentence. Four words of copy are cheaper than either.
+const NONE_PHRASE = {
+  aed: 'No AED on this route',
+  toilet: 'No toilet on this route',
+  water: 'No drinking water on this route',
+  vending: 'No vending machine on this route',
+  shelter: 'No shelter on this route',
+  parking: 'No car park on this route',
+};
+
 function renderSos() {
   const where = $('#sos-where');
   const list = $('#sos-near');
@@ -1787,9 +1799,24 @@ function renderSos() {
     + (near ? `<br>${formatDistance(near.d)} ${near.dir === 'back' ? 'past' : near.dir === 'ahead' ? 'before' : 'from'} ${escapeHtml(near.cp.name)}` : '');
 
   const rows = [];
+  const searched = !!state.record.placesFetchedAt;
   for (const cat of ['aed', 'water', 'toilet', 'shelter']) {
     const hit = nearestPoi(cat, lat, lon, anchor);
-    if (!hit) continue;
+    // An absence is the single most important thing this card can tell someone.
+    // Omitting the row leaves a walker with an incident in front of them
+    // scrolling for a defibrillator entry that was never going to be there;
+    // saying "none is mapped on this route" ends that search in one glance.
+    if (!hit) {
+      rows.push(`<li class="none-row">
+        ${legendIcon(cat)}
+        <span class="t">${escapeHtml(NONE_PHRASE[cat])}
+          <small>${searched ? 'None is mapped in OpenStreetMap here'
+    : 'Not searched yet — search from the layers panel'}</small>
+        </span>
+        <span class="d">–</span>
+      </li>`);
+      continue;
+    }
     const { p: poi, i } = hit;
     const label = CATEGORY[cat].label;
     rows.push(`<li data-cat="${cat}" data-i="${i}">

@@ -781,6 +781,10 @@ h2:first-of-type { margin-top: 0; }
   cursor: pointer;
 }
 .sos-list li:active { background: rgba(255, 255, 255, .07); }
+/* an absence, stated. Dimmed because there is nothing to tap, but present,
+   because "there is no AED on this route" is the answer to the question. */
+.sos-list li.none-row { opacity: .5; cursor: default; }
+.sos-list li.none-row:active { background: none; }
 .sos-list .ico { width: 22px; height: 22px; flex: none; }
 .sos-list .t { flex: 1; min-width: 0; font-size: 13px; }
 .sos-list .t small { display: block; color: var(--ink-dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
