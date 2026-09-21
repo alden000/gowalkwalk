@@ -54,6 +54,20 @@ const ROUND_TIMEOUTS_MS = [12000, 30000];
 // A pause between rounds, so a second pass is not simply the first pass again.
 const ROUND_PAUSE_MS = 1200;
 
+// Whichever mirror last answered, tried first next time.
+//
+// A long route is split into several queries, and without this each one starts
+// the sweep again at a mirror already known to be dead — paying the same 12 s
+// over and over, so a trail long enough to need six chunks wastes over a minute
+// on a host that answered none of the first five.
+let preferred = null;
+
+/** The mirrors, with the one that last worked at the front. */
+function mirrors() {
+  if (!preferred) return ENDPOINTS;
+  return [preferred, ...ENDPOINTS.filter(e => e !== preferred)];
+}
+
 /** OSM tags → one of our categories, or null to ignore. Mirrors the reference app. */
 function classify(t) {
   const amenity = t.amenity || '';
@@ -250,7 +264,7 @@ async function runQuery(body, { signal, onAttempt } = {}) {
   let lastError = null;
   for (let round = 0; round < ROUND_TIMEOUTS_MS.length; round++) {
     if (round) await sleep(ROUND_PAUSE_MS);
-    for (const endpoint of ENDPOINTS) {
+    for (const endpoint of mirrors()) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const host = new URL(endpoint).host;
       onAttempt?.(host, round);
@@ -266,7 +280,11 @@ async function runQuery(body, { signal, onAttempt } = {}) {
           continue;
         }
         if (!res.ok) throw new Error(`${host}: HTTP ${res.status}`);
-        return await res.json();
+        const answer = await res.json();
+        // Remembered only on a genuine answer, so the next chunk starts with a
+        // mirror known to be alive rather than at the top of the list again.
+        preferred = endpoint;
+        return answer;
       } catch (err) {
         // The walker tapping Cancel is not a mirror failing; it stops everything.
         if (cancelled(err, signal)) throw err;

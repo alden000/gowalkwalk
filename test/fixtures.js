@@ -116,6 +116,15 @@ function write() {
     gpx(loop({ r: 0.0058, n: 180 }), { name: 'Stuck probe' }));
   fs.writeFileSync(path.join(OUT, 'cancel.gpx'),
     gpx(loop({ r: 0.0062, n: 160 }), { name: 'Cancel probe' }));
+  // ~39 km, so it needs more than one Overpass query and the sweep's memory of
+  // which mirror answered can be tested. Routed through the same neighbourhood
+  // as the loop, so the stubbed facilities still fall in its corridor.
+  const longPts = [];
+  for (let i = 0; i <= 400; i++) {
+    const t = i / 400;
+    longPts.push([1.20 + t * 0.35, 103.8195 + 0.004 * Math.sin(t * 18), null]);
+  }
+  fs.writeFileSync(path.join(OUT, 'long.gpx'), gpx(longPts, { name: 'Long trail' }));
   console.log(`fixtures written to ${OUT}`);
 }
 

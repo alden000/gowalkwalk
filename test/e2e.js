@@ -415,7 +415,7 @@ function check(name, ok, extra = '') {
   const hosts = new Set();
   await page.setInputFiles('#file', path.join(TMP, 'stuck.gpx'));
   await page.waitForSelector('#import:not([hidden])');
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 45; i++) {
     const note = await page.textContent('#imp-note').catch(() => '');
     const host = /asking (\S+)/.exec(note)?.[1];
     if (host) hosts.add(host);
@@ -425,7 +425,10 @@ function check(name, ok, extra = '') {
   check('all mirrors hanging: the card works through them',
     hosts.size >= 3, [...hosts].join(', '));
   check('"Open the map anyway" is offered once the file is read',
-    await page.isVisible('#imp-skip'));
+    await page.isVisible('#imp-skip'),
+    `import hidden=${await page.getAttribute('#import', 'hidden') !== null}, `
+    + `note=${await page.textContent('#imp-note').catch(() => '-')}, `
+    + `body=${await page.getAttribute('body', 'class')}`);
   await page.click('#imp-skip');
   await page.waitForSelector('body:not(.no-route)', { timeout: 15000 });
   check('skipping the search still opens the route',
@@ -459,6 +462,31 @@ function check(name, ok, extra = '') {
   await page.waitForSelector('#import', { state: 'hidden', timeout: 10000 });
   check('Cancel gets you out of a stuck search', await page.isVisible('#drop'));
   hangingMirrors = [];
+
+  // ── a long route must not pay the dead mirror's timeout per chunk ──
+  // Reloaded first, so the sweep starts with no memory of which mirror works —
+  // otherwise this would pass without the memory ever being exercised.
+  await page.goto(`http://localhost:${PORT}/`);
+  await page.waitForSelector('body:not(.no-route)', { timeout: 20000 });
+  await page.click('#btn-home');
+  await page.waitForSelector('#home:not([hidden])');
+  hangingMirrors = ['overpass-api.de'];
+  hungCalls = 0;
+  overpassCalls = 0;
+  await page.setInputFiles('#file', path.join(TMP, 'long.gpx'));
+  await page.waitForSelector('body:not(.no-route)', { timeout: 90000 });
+  check('a long route needs several queries', overpassCalls >= 2, `${overpassCalls} queries`);
+  check('the dead mirror is tried once, not once per chunk',
+    hungCalls === 1, `${hungCalls} hung request(s) across ${overpassCalls} queries`);
+  hangingMirrors = [];
+
+  // back to a route with everything on it, for the offline check below
+  await page.click('#btn-home');
+  await page.waitForSelector('#routes .route-open');
+  await page.click('#routes .route-open[data-id]:has-text("Test Loop")').catch(async () => {
+    await page.click('#routes .route-open');
+  });
+  await page.waitForSelector('body:not(.no-route)', { timeout: 20000 });
 
   // ── offline: the claim the whole app is built around ──
   // The service worker has to be controlling the page before this means

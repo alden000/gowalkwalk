@@ -230,7 +230,9 @@ Singapore.
   some refuse with 429 or 504, others accept the query and queue it, answering
   in their own time or never. Every request therefore has a deadline, and the
   three mirrors are swept twice — briskly, then patiently — with the import card
-  naming whichever is being tried. **Open the map anyway** abandons the search
+  naming whichever is being tried, and remembering whichever answered so a long
+  route's later queries start with a mirror known to be alive rather than paying
+  the dead one's deadline again. **Open the map anyway** abandons the search
   at any point and opens the route without it; the facilities can be filled in
   later with *Search OpenStreetMap again* in the layers panel.
 - **Landmarks are ranked by tags**, which is a proxy for interest, not a
