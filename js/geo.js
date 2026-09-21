@@ -347,6 +347,25 @@ export function elevationGain(points, thresholdM = 5) {
   return gain;
 }
 
+/** The extent of a point list, in one pass. */
+export function bounds(points) {
+  const out = {
+    minLat: Infinity, maxLat: -Infinity, minLon: Infinity, maxLon: -Infinity,
+    minEle: Infinity, maxEle: -Infinity, hasEle: false,
+  };
+  for (const [lat, lon, ele] of points) {
+    if (lat < out.minLat) out.minLat = lat;
+    if (lat > out.maxLat) out.maxLat = lat;
+    if (lon < out.minLon) out.minLon = lon;
+    if (lon > out.maxLon) out.maxLon = lon;
+    if (ele == null) continue;
+    out.hasEle = true;
+    if (ele < out.minEle) out.minEle = ele;
+    if (ele > out.maxEle) out.maxEle = ele;
+  }
+  return out;
+}
+
 /**
  * Index raw [lat, lon, ele?] points into the document the app runs on.
  *
@@ -371,9 +390,10 @@ export function buildRouteDoc(rawPoints, meta = {}) {
   const total = cumulative[cumulative.length - 1];
   if (!(total > 0)) throw new Error('Every point in the file is in the same place.');
 
-  const lats = points.map(p => p[0]);
-  const lons = points.map(p => p[1]);
-  const eles = points.map(p => p[2]).filter(e => e != null);
+  // Walked rather than spread: `Math.min(...array)` passes every element as an
+  // argument, and a multi-day track that survives thinning can be well past the
+  // argument limit, where it does not return a wrong answer but throws.
+  const span = bounds(points);
   const endGap = haversine(points[0][0], points[0][1],
     points[points.length - 1][0], points[points.length - 1][1]);
 
@@ -387,12 +407,12 @@ export function buildRouteDoc(rawPoints, meta = {}) {
     // ends mean something; a 200 m out-and-back is not a loop.
     isLoop: endGap < LOOP_TOLERANCE_M && total > 500,
     bounds: {
-      minLat: Math.min(...lats), maxLat: Math.max(...lats),
-      minLon: Math.min(...lons), maxLon: Math.max(...lons),
+      minLat: span.minLat, maxLat: span.maxLat,
+      minLon: span.minLon, maxLon: span.maxLon,
     },
-    elevation: eles.length
-      ? { min: Math.round(Math.min(...eles) * 10) / 10,
-          max: Math.round(Math.max(...eles) * 10) / 10,
+    elevation: span.hasEle
+      ? { min: Math.round(span.minEle * 10) / 10,
+          max: Math.round(span.maxEle * 10) / 10,
           gain: Math.round(elevationGain(points)),
           source: meta.elevationSource || 'file' }
       : { min: null, max: null, gain: null, source: null },

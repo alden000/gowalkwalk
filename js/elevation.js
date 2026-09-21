@@ -10,7 +10,7 @@
 // elevation service (Copernicus DEM, 90 m). Keyless, CORS-enabled, and the
 // result is stored with the route so it is fetched once.
 
-import { elevationGain } from './geo.js';
+import { bounds, elevationGain } from './geo.js';
 
 const API = 'https://api.open-meteo.com/v1/elevation';
 // The service takes up to 100 coordinates per request.
@@ -62,11 +62,11 @@ export async function fillElevation(doc, { signal } = {}) {
     }
   }
 
-  const eles = doc.points.map(p => p[2]).filter(e => e != null);
-  if (!eles.length) throw new Error('elevation: nothing usable came back');
+  const span = bounds(doc.points);
+  if (!span.hasEle) throw new Error('elevation: nothing usable came back');
   doc.elevation = {
-    min: Math.round(Math.min(...eles) * 10) / 10,
-    max: Math.round(Math.max(...eles) * 10) / 10,
+    min: Math.round(span.minEle * 10) / 10,
+    max: Math.round(span.maxEle * 10) / 10,
     gain: Math.round(elevationGain(doc.points)),
     source: 'dem',
   };
