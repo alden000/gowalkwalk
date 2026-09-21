@@ -95,7 +95,56 @@ function crc32(buf) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-module.exports = { loop, line, gpx, kml, kmz, OUT };
+/**
+ * A real 256x256 PNG, so a test that measures tile sharpness measures
+ * something. A 1x1 placeholder scales to any size without complaint, which
+ * makes "is this tile being upscaled" unanswerable.
+ *
+ * Written by hand rather than checked in: a PNG is a signature, three chunks
+ * and a CRC, and a generated one cannot drift from what the test claims it is.
+ */
+function tilePng(size = 256) {
+  const crcTable = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c >>> 0;
+  }
+  const crc = buf => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const tail = Buffer.alloc(4);
+    tail.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, tail]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;        // 8 bits
+  ihdr[9] = 0;        // greyscale
+  // a grid, so the picture looks like a map tile rather than a flat field
+  const raw = Buffer.alloc((size + 1) * size);
+  for (let y = 0; y < size; y++) {
+    raw[y * (size + 1)] = 0;                       // filter: none
+    for (let x = 0; x < size; x++) {
+      raw[y * (size + 1) + 1 + x] = (x % 32 === 0 || y % 32 === 0) ? 90 : 225;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+module.exports = { loop, line, gpx, kml, kmz, tilePng, OUT };
 
 function write() {
   fs.mkdirSync(OUT, { recursive: true });

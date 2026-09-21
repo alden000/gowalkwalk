@@ -230,13 +230,33 @@ Singapore.
 
 ## Base maps
 
+Where a national mapping agency covers the route, its own basemap leads the
+list and is the default — it knows things no worldwide basemap does. Everywhere
+else the global topographic map is.
+
+Tiles are fetched at the screen's real resolution. A phone draws two or three
+device pixels per CSS pixel, so a 256 px tile stretched across 256 CSS pixels is
+stretched across up to 768 device pixels, which is exactly as sharp as it
+sounds. Leaflet's `detectRetina` fetches the next level down and draws it at
+half size: measured, 3.00 device pixels per tile pixel became 1.50 at DPR 3 and
+1.00 at DPR 2. It costs four times the tile requests, which is the reason it is
+not free and not the reason to skip it — the map is the product.
+
+That has a trap in it. Leaflet clamps the zoom to `maxNativeZoom` and *then*
+adds the retina offset, so a layer declaring the provider's true maximum asks
+for one level deeper than exists. Measured against the servers: OneMap answers
+z19 with a 5 KB tile and z20 with zero bytes; Esri answers z20 with a
+2,521-byte "no data" placeholder. Left alone, the deepest zoom — where someone
+is trying to find a door — would have gone blank, so the offset is taken off
+`maxNativeZoom` when retina is actually in play.
+
 | Map | Why |
 | --- | --- |
-| **Topographic** (Esri World Topo) | Contours, paths and place names worldwide, to zoom 19, and savable. The default. |
+| **Topographic** (Esri World Topo) | Contours, paths and place names worldwide, to zoom 19, and savable. The default outside Singapore. |
 | **OpenTopoMap** | Contours, hillshading and marked hiking routes. Zooms to 17. |
 | **Satellite** (Esri World Imagery) | Settles what the ground actually is. |
 | **Street** (OpenStreetMap) | The same data the facility markers come from. |
-| **OneMap (SLA)** | Singapore only — park connectors, trails and nature-reserve paths. Offered when the route is inside its coverage. |
+| **OneMap (SLA)** | Singapore only — park connectors, trails, nature-reserve paths and block numbers. **The default for a route inside its coverage.** |
 
 ---
 

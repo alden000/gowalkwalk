@@ -558,6 +558,25 @@ function thumbUrl(spec, lat, lon) {
   return tileUrl(spec, THUMB_ZOOM, x, y);
 }
 
+/**
+ * Keep a retina layer from asking for tiles that do not exist.
+ *
+ * Leaflet clamps the map's zoom to maxNativeZoom and *then* adds the zoom
+ * offset that `detectRetina` introduces, so a layer declaring the provider's
+ * true maximum of 19 asks for z20 on any phone. Measured against the real
+ * servers: OneMap answers z19 with a 5 KB tile and z20 with zero bytes, and
+ * Esri answers z20 with a 2,521-byte "no data" placeholder — so the deepest
+ * zoom, which is where someone looks when they are trying to find a door,
+ * would have gone blank.
+ *
+ * Only adjusted when retina is actually in play; on a 1× display the offset is
+ * not applied and the provider's real maximum is the right ceiling.
+ */
+function retinaSafe(opts) {
+  if (!opts.detectRetina || !L.Browser.retina || opts.maxNativeZoom == null) return opts;
+  return { ...opts, maxNativeZoom: opts.maxNativeZoom - 1 };
+}
+
 function buildMap(routeDoc) {
   const b = routeDoc.bounds;
   // the corridor around the route, converted to degrees at this latitude
@@ -583,7 +602,9 @@ function buildMap(routeDoc) {
   map.attributionControl.setPrefix('');
 
   state.basemaps = basemapsFor(b);
-  for (const spec of state.basemaps) state.baseLayers[spec.id] = L.tileLayer(spec.tiles, spec.opts);
+  for (const spec of state.basemaps) {
+    state.baseLayers[spec.id] = L.tileLayer(spec.tiles, retinaSafe(spec.opts));
+  }
 
   // The footpath overlay is fetched on demand, so it starts empty and fills in
   // the first time somebody asks for it.

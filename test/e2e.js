@@ -61,9 +61,9 @@ const server = http.createServer((req, res) => {
   res.end(fs.readFileSync(file));
 });
 
-const PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-  'base64');
+// A genuine 256x256 tile: the size the servers actually return, so a
+// sharpness measurement has something real to measure.
+const PNG = fixtures.tilePng(256);
 
 // Two AEDs, a toilet, water, a vending machine, a shelter, a car park and two
 // landmarks, all within the corridor of the test loop.
@@ -169,8 +169,11 @@ async function stub(context, { lat, lon }) {
           uv_index: hours.map(() => 3) },
         daily: { temperature_2m_max: [12], temperature_2m_min: [4], uv_index_max: [4] } }) });
     }
-    // tiles and anything else
-    return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
+    // Tiles and anything else. The CORS header matters: the tile layers set
+    // crossOrigin, so a response without it is rejected by the browser and the
+    // map stays blank — which silently weakens any check that looks at tiles.
+    return route.fulfill({ status: 200, contentType: 'image/png', body: PNG,
+      headers: { 'access-control-allow-origin': '*' } });
   });
 }
 
@@ -763,6 +766,74 @@ function check(name, ok, extra = '') {
     check('route opens with the radio off', !!offline.name && offline.markers > 3,
       JSON.stringify(offline));
     await context.setOffline(false);
+  }
+
+  // ── the map itself: sharpness and the deepest zoom ──
+  // Its own context: these need a retina display, and a service worker, once it
+  // takes control, serves tiles outside Playwright's routing where they cannot
+  // be inspected.
+  {
+    const tileCtx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+      serviceWorkers: 'block',
+    });
+    await stub(tileCtx, SG);
+    const tilePage = await tileCtx.newPage();
+    await tilePage.goto(`http://localhost:${PORT}/`);
+    await tilePage.waitForSelector('#drop');
+    await tilePage.setInputFiles('#file', path.join(TMP, 'loop.gpx'));
+    await tilePage.waitForSelector('body:not(.no-route)', { timeout: 40000 });
+    await tilePage.waitForTimeout(2500);
+
+    const base = await tilePage.evaluate(() => ({
+      active: [...document.querySelectorAll('#basemaps button')]
+        .find(b => b.getAttribute('aria-checked') === 'true')?.innerText.trim(),
+      first: document.querySelector('#basemaps button')?.innerText.trim(),
+    }));
+    check('a Singapore route opens on OneMap',
+      base.active === 'OneMap (SLA)' && base.first === 'OneMap (SLA)', JSON.stringify(base));
+
+    const sharp = await tilePage.evaluate(() => {
+      const img = [...document.querySelectorAll('.leaflet-tile')].find(i => i.naturalWidth > 0);
+      if (!img) return null;
+      const r = img.getBoundingClientRect();
+      return { natural: img.naturalWidth, css: Math.round(r.width), dpr: devicePixelRatio };
+    });
+    check('tiles are fetched at the screen\u2019s real resolution',
+      !!sharp && sharp.css === 128 && sharp.natural === 256,
+      sharp ? `${sharp.natural}px tile drawn at ${sharp.css} CSS px, DPR ${sharp.dpr} `
+        + `= ${((sharp.css * sharp.dpr) / sharp.natural).toFixed(2)} device px per tile px` : 'no tile');
+
+    // every base map must still have tiles at the deepest zoom the map allows:
+    // Leaflet clamps to maxNativeZoom before adding the retina offset, so a
+    // careless setting asks for a zoom the servers do not publish
+    const names = await tilePage.evaluate(() =>
+      [...document.querySelectorAll('#basemaps button')].map(b => b.innerText.trim()));
+    const deep = {};
+    for (const name of names) {
+      await tilePage.evaluate(n => [...document.querySelectorAll('#basemaps button')]
+        .find(b => b.innerText.trim() === n)?.click(), name);
+      await tilePage.waitForTimeout(350);
+      for (let i = 0; i < 9; i++) { await tilePage.click('#btn-zoom-in'); await tilePage.waitForTimeout(90); }
+      await tilePage.waitForTimeout(900);
+      deep[name] = await tilePage.evaluate(() => {
+        const imgs = [...document.querySelectorAll('.leaflet-tile')];
+        return {
+          loaded: imgs.filter(i => i.naturalWidth > 0).length,
+          n: imgs.length,
+          z: Number((imgs[0]?.src || '').match(/\/(\d+)\/\d+\/\d+/)?.[1] ?? -1),
+        };
+      });
+      for (let i = 0; i < 9; i++) { await tilePage.click('#btn-zoom-out'); await tilePage.waitForTimeout(70); }
+    }
+    check('no base map goes blank at the deepest zoom',
+      Object.values(deep).every(d => d.n > 0 && d.loaded === d.n),
+      JSON.stringify(deep));
+    check('no base map asks for a zoom its server does not publish',
+      Object.entries(deep).every(([n, d]) => d.z <= (n === 'OpenTopoMap' ? 17 : 19)),
+      Object.entries(deep).map(([n, d]) => `${n}:z${d.z}`).join(' '));
+    await tileCtx.close();
   }
 
   const real = errors.filter(e => !/favicon|Failed to load resource|sw\.js|ServiceWorker/i.test(e));
