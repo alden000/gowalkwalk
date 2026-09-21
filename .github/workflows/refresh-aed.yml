@@ -1,0 +1,58 @@
+name: Refresh the SCDF AED register
+
+# SCDF publish "Public Access AEDs" on data.gov.sg irregularly — roughly once a
+# year, in practice. The check runs daily anyway, because the cost of asking is
+# a few hundred bytes of metadata and the cost of being a year stale is a walker
+# sent to a defibrillator that has moved.
+#
+# Only a genuine change downloads the seven-megabyte register and commits a
+# rebuilt data/aed-sg.json; an unchanged day touches nothing at all. The commit
+# lands on the working branch, where the Pages workflow deploys it and the test
+# workflow checks it, exactly as a human push would.
+
+on:
+  schedule:
+    # 04:30 Singapore time, which is a quiet hour for both the runner fleet and
+    # anyone who might be walking.
+    - cron: '30 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-aed
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          ref: claude/gpx-kml-route-upload-30ojt8
+
+      - name: Rebuild the register if SCDF have published a new one
+        run: python3 tools/fetch_aed.py --if-changed
+
+      - name: Commit it, if it changed
+        run: |
+          if git diff --quiet -- data/aed-sg.json; then
+            echo "no change to data/aed-sg.json"
+            exit 0
+          fi
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open('data/aed-sg.json'))
+          print(f"Rebuilt from SCDF's {d['sourceUpdatedAt']} publication: "
+                f"{len(d['aed']):,} AEDs.")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/aed-sg.json
+          git commit -m "Refresh the SCDF AED register
+
+          Rebuilt by .github/workflows/refresh-aed.yml from the copy SCDF
+          published on data.gov.sg. Data only; no code changed."
+          git push

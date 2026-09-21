@@ -13,7 +13,7 @@
 // The routes themselves are not here. They live in IndexedDB, written as they
 // are imported, which is what makes a route usable offline — not this cache.
 
-const VERSION = 'v4';
+const VERSION = 'v5';
 const SHELL_CACHE = `gww-shell-${VERSION}`;
 const TILE_CACHE = `gww-tiles-${VERSION}`;
 const MAX_TILES = 1200;
@@ -47,6 +47,7 @@ const SHELL = [
   './',
   'index.html',
   'css/app.css',
+  'js/aed.js',
   'js/app.js',
   'js/basemaps.js',
   'js/checkpoints.js',
@@ -69,6 +70,12 @@ const SHELL = [
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',
 ];
+
+// data/aed-sg.json is deliberately NOT precached. It is nine hundred kilobytes
+// of Singapore defibrillators, and most walkers are not in Singapore; making
+// every install pay for it would be rude. It is same-origin, so the handler
+// below keeps a copy the first time a Singapore route actually asks for it,
+// and from then on it works offline like everything else.
 
 // Every host the base maps fetch tiles from. OpenTopoMap is served from three
 // subdomains, so this is matched as a suffix rather than by equality.

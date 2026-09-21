@@ -19,6 +19,7 @@ import { basemapsFor, tileUrl } from './basemaps.js';
 import { readRouteFile } from './routefile.js';
 import { fetchPlaces, fetchTrails, MAX_OFFSET_M } from './overpass.js';
 import { fillElevation } from './elevation.js';
+import { coversRoute, mergeAeds, openAt, sgAedsAlong, todayLabel } from './aed.js';
 import { buildCheckpoints } from './checkpoints.js';
 import {
   routeId, saveRoute, savePlaces, loadRoute, listRoutes, deleteRoute,
@@ -349,12 +350,14 @@ async function importFile(file) {
             host ? `asking ${host}` : 'Searching OpenStreetMap along the route…']
             .filter(Boolean).join(' · ')),
       });
-      record.facilities = places.facilities;
+      const merged = await withSgAeds(doc, places.facilities, { signal: abort.signal });
+      record.facilities = merged.facilities;
       record.landmarks = places.landmarks;
       record.placesFetchedAt = places.fetchedAt;
-      const n = Object.values(places.facilities).reduce((sum, list) => sum + list.length, 0);
+      const n = Object.values(merged.facilities).reduce((sum, list) => sum + list.length, 0);
       importStep('places', 'done',
-        `${n} facilities and ${places.landmarks.length} landmarks along the route`);
+        `${n} facilities and ${places.landmarks.length} landmarks along the route`
+        + (merged.added ? ` · ${merged.added} AEDs from SCDF` : ''));
     } catch (err) {
       if (abort.signal.aborted) throw err;
       console.warn('places', err);
@@ -459,6 +462,41 @@ async function openRoute(record) {
   startWeather();
 
   renderRouteAlert();
+  refreshSgAeds();
+}
+
+/**
+ * Bring a saved route's defibrillators up to date with the shipped register.
+ *
+ * The AEDs are stored with the route so they survive with no signal, which also
+ * means a route imported last year keeps last year's AEDs for ever. The
+ * register is refreshed whenever SCDF publish, so every opening re-derives them
+ * from the copy on the device and writes back only when something actually
+ * moved. Silent by design: there is nothing for the walker to do about it, and
+ * nothing here is worth a toast.
+ */
+async function refreshSgAeds() {
+  const id = state.id;
+  const record = state.record;
+  if (!record || !coversRoute(record.doc.bounds)) return;
+  try {
+    const { aeds } = await sgAedsAlong(record.doc);
+    if (state.id !== id || !state.map) return;          // the walker moved on
+    const fromOsm = (record.facilities.aed || []).filter(a => a.source !== 'scdf');
+    const merged = mergeAeds(fromOsm, aeds);
+    const before = record.facilities.aed || [];
+    const same = merged.length === before.length
+      && merged.every((a, i) => a.id === before[i].id);
+    if (same) return;
+    await savePlaces(id, { facilities: { ...record.facilities, aed: merged } });
+    if (state.id !== id || !state.map) return;
+    const fresh = await loadRoute(id);
+    if (state.id !== id || !state.map || !fresh) return;
+    applyPlaces(fresh);
+  } catch (err) {
+    // No register, no change: the route keeps the AEDs it was saved with.
+    console.warn('aed refresh', err);
+  }
 }
 
 async function leaveRoute() {
@@ -730,6 +768,24 @@ function renderHudNote() {
  * than an anonymous count. Categories stay individually toggleable by adding
  * and removing their markers from the group.
  */
+/**
+ * What this AED's hours mean right now.
+ *
+ * Deliberately leads with the state rather than the timetable: someone reading
+ * this is not comparing opening times, they are deciding whether to run there.
+ * Unknown hours read as no claim at all — better than a confident "open" the
+ * data does not support, and far better than a "closed" that stops someone
+ * going to a machine that is in fact on the wall.
+ */
+function aedHours(p, at = new Date()) {
+  if (!p.hoursWeek && !p.hoursText) return { text: '', open: null };
+  const open = p.hoursWeek ? openAt(p.hoursWeek, at) : null;
+  const today = p.hoursWeek ? todayLabel(p.hoursWeek, at) : p.hoursText;
+  if (open === true) return { text: `Open now · ${today}`, open: true };
+  if (open === false) return { text: `Closed now · ${today}`, open: false };
+  return { text: p.hoursText || '', open: null };
+}
+
 function buildPois() {
   const cluster = L.markerClusterGroup({
     maxClusterRadius: 46,          // px: only pins that genuinely overlap
@@ -755,13 +811,20 @@ function buildPois() {
         icon: poiIcon(cat),
         category: cat,
         zIndexOffset: cat === 'aed' ? 500 : 0,
-      }).bindPopup(
-        photoHtml(p.photo) +
-        `<div class="pop-t">${escapeHtml(p.name === meta.label ? meta.label : p.name)}</div>` +
-        (p.detail ? `<div class="pop-d">${escapeHtml(p.detail)}</div>` : '') +
-        (p.note ? `<div class="pop-n">${escapeHtml(p.note)}</div>` : '') +
-        `<div class="pop-m">km ${(p.along / 1000).toFixed(2)} on route · ${p.offset} m off the path</div>`,
-        { maxWidth: (p.note || p.photo) ? 280 : 300 }));
+      }).bindPopup(() => {
+        const hours = cat === 'aed' ? aedHours(p) : { text: '', open: null };
+        return photoHtml(p.photo)
+          + `<div class="pop-t">${escapeHtml(p.name === meta.label ? meta.label : p.name)}</div>`
+          + (p.detail ? `<div class="pop-d">${escapeHtml(p.detail)}</div>` : '')
+          // Rendered when the popup opens rather than when the marker is built,
+          // so "open now" is true at the moment it is read and not at the
+          // moment the route happened to load.
+          + (hours.text
+            ? `<div class="pop-h" data-open="${hours.open}">${escapeHtml(hours.text)}</div>` : '')
+          + (p.note ? `<div class="pop-n">${escapeHtml(p.note)}</div>` : '')
+          + `<div class="pop-m">km ${(p.along / 1000).toFixed(2)} on route · ${p.offset} m off the path`
+          + (p.source === 'scdf' ? ' · SCDF' : '') + '</div>';
+      }, { maxWidth: (p.note || p.photo) ? 280 : 300 }));
 
     state.markersByCategory[cat] = markers;
     cluster.addLayers(markers);
@@ -976,9 +1039,11 @@ function renderRouteAlert(extra) {
 function renderPoiNote() {
   const total = Object.values(state.pois).reduce((n, list) => n + list.length, 0);
   const radii = Object.values(MAX_OFFSET_M);
+  const fromScdf = (state.pois.aed || []).filter(p => p.source === 'scdf').length;
   $('#poi-note').textContent = total
     ? `Within ${Math.min(...radii)}–${Math.max(...radii)} m of the route, depending on the kind. `
-      + 'Data © OpenStreetMap contributors.'
+      + 'Data © OpenStreetMap contributors'
+      + (fromScdf ? `; ${fromScdf} AEDs © Singapore Civil Defence Force via data.gov.sg.` : '.')
     // An empty list is worth a sentence: it is as likely to mean nobody has
     // mapped this valley as it is to mean there is no water on the route, and
     // a walker planning round it should know which claim the app is making.
@@ -1097,6 +1162,29 @@ function applyPlaces(record) {
   renderRouteAlert();
 }
 
+/**
+ * Add the official register's defibrillators to what OpenStreetMap found.
+ *
+ * Only where it covers the route, and never fatally: an AED layer that fails to
+ * load leaves the OpenStreetMap ones exactly as they were, which is what the
+ * app had before the register existed.
+ */
+async function withSgAeds(doc, facilities, { signal } = {}) {
+  if (!coversRoute(doc.bounds)) return { facilities, added: 0 };
+  try {
+    const { aeds } = await sgAedsAlong(doc, { signal });
+    if (!aeds.length) return { facilities, added: 0 };
+    return {
+      facilities: { ...facilities, aed: mergeAeds(facilities.aed || [], aeds) },
+      added: aeds.length,
+    };
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    console.warn('aed register', err);
+    return { facilities, added: 0 };
+  }
+}
+
 /** Search OpenStreetMap again — coverage improves, and a failed import can retry. */
 async function refreshPlaces() {
   if (state.searching) return;
@@ -1118,9 +1206,10 @@ async function refreshPlaces() {
         renderRouteAlert(note);
       },
     });
+    const merged = await withSgAeds(state.record.doc, places.facilities);
     const checkpoints = buildCheckpoints(state.record.doc, state.record.waypoints, places.landmarks);
     await savePlaces(state.id, {
-      facilities: places.facilities,
+      facilities: merged.facilities,
       landmarks: places.landmarks,
       checkpoints,
       placesFetchedAt: places.fetchedAt,
@@ -1134,7 +1223,7 @@ async function refreshPlaces() {
     state.searching = false;
     applyPlaces(record);
 
-    const n = Object.values(places.facilities).reduce((sum, list) => sum + list.length, 0);
+    const n = Object.values(merged.facilities).reduce((sum, list) => sum + list.length, 0);
     toast(n || places.landmarks.length
       ? `${n} facilities and ${places.landmarks.length} landmarks along the route`
       : 'Nothing mapped along this route yet');
@@ -1752,6 +1841,29 @@ function nearestCheckpoint(lat, lon, anchor) {
   return best;
 }
 
+/**
+ * The nearest defibrillator a walker could actually use right now.
+ *
+ * Distance alone is the wrong answer here. The register knows that the AED
+ * 30 m away is inside a school that shut at five, and sending someone there
+ * while an always-open one sits 200 m further on costs the minutes that decide
+ * the outcome. So an open one wins on distance among open ones, and a closed
+ * one is only offered when there is nothing else — labelled, so the walker
+ * knows what they are being sent to. Unknown hours count as usable.
+ */
+function nearestAed(lat, lon, anchor, at = new Date()) {
+  let bestOpen = null;
+  let bestAny = null;
+  (state.pois.aed || []).forEach((p, i) => {
+    const m = measureTo(lat, lon, p.lat, p.lon, p.along, p.offset, anchor);
+    const open = p.hoursWeek ? openAt(p.hoursWeek, at) : null;
+    const cand = { p, i, ...m, open };
+    if (!bestAny || m.d < bestAny.d) bestAny = cand;
+    if (open !== false && (!bestOpen || m.d < bestOpen.d)) bestOpen = cand;
+  });
+  return bestOpen || bestAny;
+}
+
 function nearestPoi(cat, lat, lon, anchor) {
   let best = null;
   (state.pois[cat] || []).forEach((p, i) => {
@@ -1801,7 +1913,7 @@ function renderSos() {
   const rows = [];
   const searched = !!state.record.placesFetchedAt;
   for (const cat of ['aed', 'water', 'toilet', 'shelter']) {
-    const hit = nearestPoi(cat, lat, lon, anchor);
+    const hit = cat === 'aed' ? nearestAed(lat, lon, anchor) : nearestPoi(cat, lat, lon, anchor);
     // An absence is the single most important thing this card can tell someone.
     // Omitting the row leaves a walker with an incident in front of them
     // scrolling for a defibrillator entry that was never going to be there;
@@ -1819,10 +1931,12 @@ function renderSos() {
     }
     const { p: poi, i } = hit;
     const label = CATEGORY[cat].label;
-    rows.push(`<li data-cat="${cat}" data-i="${i}">
+    const hours = cat === 'aed' ? aedHours(poi) : { text: '', open: null };
+    rows.push(`<li data-cat="${cat}" data-i="${i}"${hours.open === false ? ' data-shut="1"' : ''}>
       ${legendIcon(cat)}
       <span class="t">${escapeHtml(poi.name === label ? label : poi.name)}
-        <small>${escapeHtml([poi.name !== label ? label : '', poi.detail].filter(Boolean).join(' · '))}</small>
+        <small>${escapeHtml([poi.name !== label ? label : '', poi.detail, hours.text]
+    .filter(Boolean).join(' · '))}</small>
       </span>
       <span class="d">${formatDistance(hit.d)}${hit.dir ? `<small>${hit.dir}</small>` : ''}</span>
     </li>`);

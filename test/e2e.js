@@ -195,7 +195,8 @@ function check(name, ok, extra = '') {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));
-  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text());
+    if (process.env.DEBUG) console.log(`  [${m.type()}]`, m.text().slice(0, 200)); });
 
   await page.goto(`http://localhost:${PORT}/`);
   await page.waitForSelector('#drop');
@@ -242,7 +243,7 @@ function check(name, ok, extra = '') {
   const counts = await page.evaluate(() => Object.fromEntries(
     [...document.querySelectorAll('#overlays label')].map(l =>
       [l.querySelector('input').dataset.layer, Number(l.querySelector('.c').textContent)])));
-  check('AEDs found', counts.aed === 2, JSON.stringify(counts));
+  check('OpenStreetMap AEDs kept alongside the register', counts.aed >= 2, JSON.stringify(counts));
   check('toilet found', counts.toilet === 1);
   check('water found', counts.water === 1);
   check('vending found', counts.vending === 1);
@@ -259,10 +260,57 @@ function check(name, ok, extra = '') {
     photo?.src === 'https://commons.wikimedia.org/wiki/Special:FilePath/A_little_hill.jpg?width=560',
     JSON.stringify(photo));
 
+  // ── the official SCDF register, for a route inside Singapore ──
+  const reg = await page.evaluate(async () => {
+    const m = await import('/js/store.js');
+    const rec = await m.loadRoute(m.lastRouteId());
+    const aed = rec.facilities.aed || [];
+    return {
+      total: aed.length,
+      scdf: aed.filter(a => a.source === 'scdf').length,
+      osm: aed.filter(a => a.source !== 'scdf').length,
+      withHours: aed.filter(a => Array.isArray(a.hoursWeek)).length,
+      sample: aed.filter(a => a.source === 'scdf')[0] || null,
+    };
+  });
+  check('SCDF AEDs are merged in for a Singapore route', reg.scdf > 10,
+    `${reg.scdf} from SCDF, ${reg.osm} from OSM`);
+  check('the register brings opening hours', reg.withHours >= reg.scdf,
+    `${reg.withHours} of ${reg.total} have hours`);
+  check('a register AED carries where to find it',
+    !!reg.sample && !!reg.sample.name && typeof reg.sample.detail === 'string',
+    JSON.stringify(reg.sample));
+  // a route saved before the register was refreshed picks the new AEDs up on
+  // its own, which is what makes a scheduled data update worth having
+  check('a saved route re-derives its AEDs when reopened', await page.evaluate(async () => {
+    const m = await import('/js/store.js');
+    const id = m.lastRouteId();
+    const rec = await m.loadRoute(id);
+    const osmOnly = (rec.facilities.aed || []).filter(a => a.source !== 'scdf');
+    await m.savePlaces(id, { facilities: { ...rec.facilities, aed: osmOnly } });
+    const stripped = await m.loadRoute(id);
+    if ((stripped.facilities.aed || []).some(a => a.source === 'scdf')) return false;
+    // reopen the route the way the button does
+    document.querySelector('#btn-home').click();
+    await new Promise(r => setTimeout(r, 900));
+    document.querySelector('#routes .route-open').click();
+    await new Promise(r => setTimeout(r, 2500));
+    const after = await m.loadRoute(m.lastRouteId());
+    return (after.facilities.aed || []).filter(a => a.source === 'scdf').length > 10;
+  }));
+
+  check('the layers panel credits SCDF',
+    /Singapore Civil Defence Force/.test(await page.textContent('#poi-note')),
+    (await page.textContent('#poi-note')).slice(-70));
+
   const cps = await page.evaluate(() => document.querySelectorAll('#bar-ticks i').length);
   check('landmarks became checkpoints', cps === 4, `${cps} intermediate checkpoints`);
 
   // ── trails on demand ──
+  // the AED re-derivation check above went home and back, which closes the
+  // layers drawer the earlier checks had left open
+  if (await page.isHidden('#layers')) await page.click('#btn-layers');
+  await page.waitForSelector('#chk-trails');
   await page.check('#chk-trails');
   await page.waitForFunction(
     () => ['1', 'failed'].includes(document.querySelector('#trails-c').textContent),
@@ -285,6 +333,20 @@ function check(name, ok, extra = '') {
   check('nearest help listed', sos.rows >= 4, `${sos.rows} rows`);
 
   check('position reported', /\d+\.\d+, \d+\.\d+/.test(sos.where), sos.where.slice(0, 60));
+  check('the nearest-help rows stay inside the card',
+    await page.evaluate(() => {
+      const panel = document.querySelector('#sos').getBoundingClientRect();
+      return [...document.querySelectorAll('#sos-near li')].every(li => {
+        const r = li.getBoundingClientRect();
+        return r.right <= panel.right + 1 && r.left >= panel.left - 1;
+      });
+    }),
+    await page.evaluate(() => {
+      const panel = document.querySelector('#sos').getBoundingClientRect();
+      const li = document.querySelector('#sos-near li')?.getBoundingClientRect();
+      return li ? `row ${Math.round(li.left)}–${Math.round(li.right)} in card `
+        + `${Math.round(panel.left)}–${Math.round(panel.right)}` : 'no rows';
+    }));
   check('contact form stays shut until asked for', !(await page.isVisible('#sos-form')));
   await page.click('#sos-edit');
   await page.fill('#sos-contact-name', 'Race control');
@@ -396,6 +458,47 @@ function check(name, ok, extra = '') {
   await page.waitForSelector('#home-err:not([hidden])', { timeout: 15000 });
   check('a track-less GPX is refused clearly',
     /No track or route points/.test(await page.textContent('#home-err')));
+
+  // ── an AED behind a locked door is not an AED ──
+  const hoursLogic = await page.evaluate(async () => {
+    const { openAt, todayLabel, mergeAeds } = await import('/js/aed.js');
+    const always = [[0, 1440], [0, 1440], [0, 1440], [0, 1440], [0, 1440], [0, 1440], [0, 1440]];
+    const school = Array.from({ length: 7 }, () => [420, 1020]);   // 07:00-17:00
+    const shut = [null, null, null, null, null, null, null];
+    const overnight = Array.from({ length: 7 }, () => [1320, 300]); // 22:00-05:00
+    const at = h => new Date(2026, 8, 21, h, 0);                    // a Monday
+    return {
+      alwaysOpen: openAt(always, at(3)),
+      schoolDay: openAt(school, at(12)),
+      schoolNight: openAt(school, at(21)),
+      shut: openAt(shut, at(12)),
+      unknown: openAt(null, at(12)),
+      overnightLate: openAt(overnight, at(23)),
+      overnightEarly: openAt(overnight, at(2)),
+      overnightNoon: openAt(overnight, at(12)),
+      label: todayLabel(school, at(12)),
+      labelAlways: todayLabel(always, at(12)),
+      // an OSM AED on top of a register one is the same machine
+      merged: mergeAeds(
+        [{ lat: 1.3, lon: 103.8, along: 0, source: 'osm' }],
+        [{ lat: 1.3001, lon: 103.8, along: 0, source: 'scdf' }]).length,
+      mergedApart: mergeAeds(
+        [{ lat: 1.31, lon: 103.8, along: 0, source: 'osm' }],
+        [{ lat: 1.30, lon: 103.8, along: 0, source: 'scdf' }]).length,
+    };
+  });
+  check('an always-open AED reads open at 3am', hoursLogic.alwaysOpen === true);
+  check('a school AED is open at noon and shut at 9pm',
+    hoursLogic.schoolDay === true && hoursLogic.schoolNight === false, JSON.stringify(hoursLogic));
+  check('a never-open AED reads shut', hoursLogic.shut === false);
+  check('unknown hours are not treated as shut', hoursLogic.unknown === null);
+  check('hours running past midnight are handled',
+    hoursLogic.overnightLate === true && hoursLogic.overnightEarly === true
+    && hoursLogic.overnightNoon === false, JSON.stringify(hoursLogic));
+  check('the hours read as words', hoursLogic.label === '07:00–17:00 today'
+    && hoursLogic.labelAlways === '24 hours', `${hoursLogic.label} / ${hoursLogic.labelAlways}`);
+  check('the same AED from both sources is one pin', hoursLogic.merged === 1);
+  check('two AEDs a kilometre apart stay two', hoursLogic.mergedApart === 2);
 
   // ── checkpoint spacing has to scale with the route ──
   // A fixed 150 m dead zone at each end is right for a 13 km event route and
@@ -594,6 +697,12 @@ function check(name, ok, extra = '') {
     return /0 facilities/.test(document.querySelector('#route-note').textContent);
   }), await page.textContent('#route-note'));
   await page.click('#btn-layers');
+  check('the Singapore register does not follow a route abroad',
+    await page.evaluate(async () => {
+      const m = await import('/js/store.js');
+      const rec = await m.loadRoute(m.lastRouteId());
+      return (rec.facilities.aed || []).length === 0;
+    }));
   check('information can be dismissed', await page.isVisible('#route-alert-dismiss'));
   await page.click('#route-alert-dismiss');
   await page.waitForTimeout(200);

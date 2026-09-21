@@ -66,9 +66,9 @@ Searched live from OpenStreetMap through the Overpass API, within a radius that
 depends on what the thing is — an AED is worth a detour, a shelter on the far
 side of the hill is not:
 
-| | Category | Within | OSM tags |
+| | Category | Within | Source |
 | --- | --- | --- | --- |
-| ❤ | AEDs | 1000 m | `emergency=defibrillator`, `amenity=defibrillator` |
+| ❤ | AEDs | 1000 m | `emergency=defibrillator`, `amenity=defibrillator` — **plus SCDF's official register in Singapore, see below** |
 | 🚻 | Toilets | 800 m | `amenity=toilets` |
 | 💧 | Drinking water | 800 m | `amenity=drinking_water`, `water_point`, `man_made=water_tap` |
 | 🥤 | Vending machines | 800 m | `amenity=vending_machine` selling drinks, water or food |
@@ -101,6 +101,37 @@ by rank, so a cluster of three benches at the trailhead cannot crowd out the
 viewpoint, and they stay spread along the route. The spacing and the clearance
 at each end are relative to the route's length: a flat 150 m dead zone is right
 for a 13 km event route and eats a quarter of a 1.2 km loop round a park.
+
+### Defibrillators in Singapore
+
+OpenStreetMap has almost no AEDs mapped in Singapore. On a 1.2 km loop in
+Woodlands it had **none** within a kilometre; SCDF's register had **161**, the
+nearest 22 m from the path. For a card that promises the nearest defibrillator,
+that is not a gap but a wrong answer, so routes inside Singapore also get
+[Public Access AEDs](https://data.gov.sg/datasets?query=AED) — 9,644 of them,
+published by the Singapore Civil Defence Force on data.gov.sg.
+
+The register brings something OpenStreetMap rarely has: **opening hours**. An
+AED behind a school gate at nine in the evening is not an AED, so the emergency
+card's "nearest" prefers one that is open at the moment you ask, and labels a
+closed one as closed rather than sending you to a locked door. Of the 9,644,
+6,572 are open around the clock, 2,954 have hours and 111 are marked closed.
+
+The data is **shipped with the app** rather than fetched. data.gov.sg's download
+API is CORS-enabled but answers with a signed link to an S3 object that sends no
+CORS headers, so a browser cannot follow it; shipping it also means it works
+with the radio off. It is not precached — most walkers are not in Singapore —
+but it is kept the first time a Singapore route asks for it.
+
+`.github/workflows/refresh-aed.yml` checks daily whether SCDF have published a
+new version, and rebuilds only when they have: the check costs a few hundred
+bytes of metadata, the rebuild seven megabytes, and in practice SCDF publish
+about once a year. Saved routes re-derive their AEDs from the shipped register
+each time they are opened, so an update reaches a route imported months ago
+without anyone having to press anything.
+
+    python3 tools/fetch_aed.py               # rebuild now
+    python3 tools/fetch_aed.py --if-changed  # rebuild only if SCDF have published
 
 ### Trails
 
@@ -275,6 +306,8 @@ js/checkpoints.js     landmarks + file pins → the ordered checkpoint list
 js/geo.js             route indexing, projection, progress tracking, simplify
 js/elevation.js       terrain sampling where the file has no elevation
 js/net.js             fetch with a deadline on every request
+js/aed.js             SCDF's Singapore AED register: opening hours, merging
+data/aed-sg.json      that register, built by tools/fetch_aed.py
 js/store.js           IndexedDB: routes, facilities, trails
 js/weather.js         NEA and Open-Meteo behind one model
 js/basemaps.js        the base map list and tile URL handling
@@ -316,6 +349,8 @@ python3 tools/rasterise.py           # writes the three PNGs
 
 - Facilities, landmarks and trails: © [OpenStreetMap](https://www.openstreetmap.org/copyright)
   contributors, ODbL, via the Overpass API.
+- Singapore AED locations: © Singapore Civil Defence Force, via
+  [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Weather and air quality: [NEA](https://data.gov.sg/) via data.gov.sg in
   Singapore; [Open-Meteo](https://open-meteo.com/) elsewhere.
 - Elevation: Copernicus DEM via Open-Meteo.

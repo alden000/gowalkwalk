@@ -116,8 +116,11 @@ function write() {
     gpx(loop({ r: 0.0058, n: 180 }), { name: 'Stuck probe' }));
   fs.writeFileSync(path.join(OUT, 'cancel.gpx'),
     gpx(loop({ r: 0.0062, n: 160 }), { name: 'Cancel probe' }));
+  // Deliberately outside Singapore: inside it, the bundled SCDF register would
+  // supply defibrillators and the route would no longer be empty — which is
+  // correct behaviour, and useless for testing the empty path.
   fs.writeFileSync(path.join(OUT, 'empty.gpx'),
-    gpx(loop({ r: 0.0045, n: 140 }), { name: 'Empty probe' }));
+    gpx(loop({ lat0: 46.62, lon0: 8.04, r: 0.0045, n: 140 }), { name: 'Empty probe' }));
   // ~39 km, so it needs more than one Overpass query and the sweep's memory of
   // which mirror answered can be tested. Routed through the same neighbourhood
   // as the loop, so the stubbed facilities still fall in its corridor.
