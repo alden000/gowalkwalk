@@ -98,8 +98,9 @@ app's hand-curated checkpoint photos.
 
 Landmarks are ranked (a summit outranks a named flowerbed) and thinned greedily
 by rank, so a cluster of three benches at the trailhead cannot crowd out the
-viewpoint, and they stay spread along the route. Anything within 150 m of either
-end is dropped — it is that end of the route under another name.
+viewpoint, and they stay spread along the route. The spacing and the clearance
+at each end are relative to the route's length: a flat 150 m dead zone is right
+for a 13 km event route and eats a quarter of a 1.2 km loop round a park.
 
 ### Trails
 
@@ -224,8 +225,12 @@ Singapore.
 ## Limitations, honestly
 
 - **OpenStreetMap coverage varies.** An empty facility list can mean nobody has
-  mapped them yet, not that they are not there. The layers panel says so rather
-  than showing a confident zero.
+  mapped them yet, not that they are not there — a suburban loop may genuinely
+  have no AEDs, vending machines or landmarks in it. The app says which it is:
+  a row in the route header states *not searched yet*, *did not answer* or
+  *nothing mapped along this route*, and re-runs the search on a tap. The
+  layers panel carries the same counts, per category, rather than showing a
+  confident zero.
 - **Overpass mirrors shed load** in two ways, and the second is the nasty one:
   some refuse with 429 or 504, others accept the query and queue it, answering
   in their own time or never. Every request therefore has a deadline, and the

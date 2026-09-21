@@ -102,6 +102,7 @@ const NEA_OK = { code: 0, data: {} };
 let overpassCalls = 0;
 let hungCalls = 0;
 let hangingMirrors = [];
+let emptyResults = false;
 let weatherProvider = null;
 
 async function stub(context, { lat, lon }) {
@@ -118,6 +119,11 @@ async function stub(context, { lat, lon }) {
       }
       overpassCalls++;
       const body = route.request().postData() || '';
+      // a corridor OpenStreetMap simply has nothing mapped in
+      if (emptyResults && !body.includes('highway')) {
+        return route.fulfill({ status: 200, contentType: 'application/json',
+          body: JSON.stringify({ elements: [] }) });
+      }
       const payload = body.includes('highway') ? trailsPayload(lat, lon) : overpassPayload(lat, lon);
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(payload) });
     }
@@ -390,6 +396,36 @@ function check(name, ok, extra = '') {
   check('a track-less GPX is refused clearly',
     /No track or route points/.test(await page.textContent('#home-err')));
 
+  // ── checkpoint spacing has to scale with the route ──
+  // A fixed 150 m dead zone at each end is right for a 13 km event route and
+  // swallows a quarter of a 1.2 km loop round a park.
+  const spacing = await page.evaluate(async () => {
+    const geo = await import('/js/geo.js');
+    const { buildCheckpoints } = await import('/js/checkpoints.js');
+    const make = (spanKm) => {
+      const pts = [];
+      const n = 200;
+      for (let i = 0; i <= n; i++) {
+        const a = (i / n) * 2 * Math.PI;
+        const r = spanKm / 111 / (2 * Math.PI);
+        pts.push([1.45 + r * Math.sin(a), 103.78 + r * Math.cos(a), null]);
+      }
+      const doc = geo.buildRouteDoc(pts, { name: `${spanKm} km` });
+      // one landmark 70 m along, which is "just after the start" on a long
+      // route and a quarter of the way round a short one
+      const at = geo.projectOnto(doc, ...(() => {
+        const p = doc.points[Math.round(doc.points.length * (70 / doc.totalDistance))];
+        return [p[0], p[1]];
+      })());
+      const lm = [{ id: 'n1', name: 'Near the start', kind: 'Viewpoint', note: '', rank: 10,
+        lat: 0, lon: 0, offset: 0, along: Math.round(at.along) }];
+      return buildCheckpoints(doc, [], lm).length - 2;
+    };
+    return { short: make(1.2), long: make(13) };
+  });
+  check('a short loop keeps a landmark near its start', spacing.short === 1, JSON.stringify(spacing));
+  check('a long route still clears its start and finish', spacing.long === 0, JSON.stringify(spacing));
+
   // ── a mirror that hangs must not hang the import ──
   // Overpass instances shed load by queueing rather than refusing, so the first
   // mirror can accept a query and simply never answer. Before the request
@@ -433,6 +469,12 @@ function check(name, ok, extra = '') {
   await page.waitForSelector('body:not(.no-route)', { timeout: 15000 });
   check('skipping the search still opens the route',
     (await page.textContent('#hud-name')) === 'Stuck probe');
+  check('the route header says the facilities are missing',
+    await page.isVisible('#route-alert')
+    && /not searched yet/i.test(await page.textContent('#route-alert')),
+    (await page.textContent('#route-alert')).replace(/\s+/g, ' ').trim());
+  check('a job cannot be dismissed, only done',
+    await page.evaluate(() => document.querySelector('#route-alert-dismiss').hidden));
   check('a skipped route keeps its start and finish from the file',
     await page.evaluate(async () => {
       const m = await import('/js/store.js');
@@ -444,13 +486,60 @@ function check(name, ok, extra = '') {
     }));
   hangingMirrors = [];
 
-  // and the facilities can be filled in later, once a mirror answers
-  await page.click('#btn-layers');
-  await page.click('#btn-refresh-pois');
-  await page.waitForSelector('body:not(.no-route)', { timeout: 30000 });
-  await page.waitForTimeout(800);
-  check('searching again fills in what the skip left out',
+  // and the facilities can be filled in later, from the row itself, without
+  // throwing away where the walker had got the map to
+  hangingMirrors = [];
+  // Drag the map somewhere deliberate first. Without this the pane transform is
+  // translate3d(0,0,0) on both sides of the search and the check would pass
+  // whether or not the view was thrown away.
+  const box = await page.locator('#map').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 - 90, box.y + box.height / 2 - 70, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  // The map pane's transform is Leaflet's own record of where the view sits.
+  const viewBefore = await page.evaluate(
+    () => document.querySelector('.leaflet-map-pane').style.transform);
+  check('the map was actually moved, so the next check means something',
+    viewBefore !== 'translate3d(0px, 0px, 0px)', viewBefore);
+  await page.click('#route-alert-go');
+  await page.waitForFunction(
+    () => document.querySelector('#route-alert').hidden
+      || /did not answer/i.test(document.querySelector('#route-alert').textContent),
+    null, { timeout: 30000 });
+  await page.waitForTimeout(500);
+  check('searching again from the row fills in what the skip left out',
     await page.evaluate(() => document.querySelectorAll('.leaflet-marker-icon').length) > 3);
+  check('the row removes itself once the facilities are there',
+    await page.evaluate(() => document.querySelector('#route-alert').hidden));
+  check('re-searching does not reset the map view',
+    (await page.evaluate(() => document.querySelector('.leaflet-map-pane').style.transform))
+      === viewBefore, viewBefore)
+
+  check('re-searching keeps the layers the walker had turned off', await page.evaluate(async () => {
+    // turn the car parks off, search again, and see whether they stay off
+    document.querySelector('#btn-layers').click();
+    const box = document.querySelector('[data-layer="parking"]');
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    document.querySelector('#btn-layers').click();
+    document.querySelector('#route-alert-go')?.click();
+    document.querySelector('#btn-refresh-pois').click();
+    await new Promise(r => setTimeout(r, 2500));
+    return document.querySelector('[data-layer="parking"]').checked === false;
+  }));
+  check('leaving the route mid-search does not break anything', await page.evaluate(async () => {
+    document.querySelector('#btn-refresh-pois').click();
+    document.querySelector('#btn-home').click();
+    await new Promise(r => setTimeout(r, 2500));
+    return !document.querySelector('#home').hidden;
+  }));
+  await page.waitForSelector('#routes .route-open');
+  await page.click('#routes .route-open:has-text("Stuck probe")');
+  await page.waitForSelector('body:not(.no-route)', { timeout: 20000 });
+  await page.waitForTimeout(300);
+
 
   // ── Cancel, on a fresh file, goes back to the library ──
   await page.click('#btn-home');
@@ -487,6 +576,45 @@ function check(name, ok, extra = '') {
     await page.click('#routes .route-open');
   });
   await page.waitForSelector('body:not(.no-route)', { timeout: 20000 });
+
+  // ── nothing mapped here: a finding, said plainly, and dismissable ──
+  await page.click('#btn-home');
+  await page.waitForSelector('#home:not([hidden])');
+  emptyResults = true;
+  await page.setInputFiles('#file', path.join(TMP, 'empty.gpx'));
+  await page.waitForSelector('body:not(.no-route)', { timeout: 40000 });
+  await page.waitForTimeout(600);
+  check('an empty result is stated, not left as a blank map',
+    await page.isVisible('#route-alert')
+    && /nothing mapped/i.test(await page.textContent('#route-alert')),
+    (await page.textContent('#route-alert')).replace(/\s+/g, ' ').trim());
+  check('the layers panel agrees about the count', await page.evaluate(async () => {
+    document.querySelector('#btn-layers').click();
+    return /0 facilities/.test(document.querySelector('#route-note').textContent);
+  }), await page.textContent('#route-note'));
+  await page.click('#btn-layers');
+  check('information can be dismissed', await page.isVisible('#route-alert-dismiss'));
+  await page.click('#route-alert-dismiss');
+  await page.waitForTimeout(200);
+  check('dismissing hides it', await page.evaluate(() => document.querySelector('#route-alert').hidden));
+  // and it stays gone when the route is opened again
+  await page.click('#btn-home');
+  await page.waitForSelector('#routes .route-open');
+  await page.click('#routes .route-open');
+  await page.waitForSelector('body:not(.no-route)', { timeout: 20000 });
+  await page.waitForTimeout(400);
+  check('and stays dismissed next time the route is opened',
+    await page.evaluate(() => document.querySelector('#route-alert').hidden));
+  emptyResults = false;
+
+  // back to the fully-populated route, so the offline check below is testing
+  // that facilities and checkpoints come back from the device — not that an
+  // empty route is still empty
+  await page.click('#btn-home');
+  await page.waitForSelector('#routes .route-open');
+  await page.click('#routes .route-open:has-text("Test Loop")');
+  await page.waitForSelector('body:not(.no-route)', { timeout: 20000 });
+  await page.waitForTimeout(400);
 
   // ── offline: the claim the whole app is built around ──
   // The service worker has to be controlling the page before this means

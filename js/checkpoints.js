@@ -13,15 +13,36 @@
 
 import { projectOnto } from './geo.js';
 
-// Two checkpoints closer together than this along the route are one checkpoint
-// as far as a walker is concerned; the more interesting of the two wins.
-const MIN_GAP_M = 250;
 // Beyond this many, the progress bar becomes a row of ticks and the "next
 // checkpoint" tile changes every two minutes.
 const MAX_LANDMARKS = 24;
-// A landmark this close to the start or the finish is that end of the route
-// under another name, and would sit on top of the flag.
-const ENDPOINT_CLEAR_M = 150;
+
+/**
+ * How far apart two checkpoints have to be to be worth being two.
+ *
+ * Length-relative, which a fixed figure cannot be. 250 m is right for an event
+ * route of ten or twenty kilometres and absurd on a 1.2 km loop round a park,
+ * where it would leave room for four checkpoints in total; equally, 250 m on a
+ * forty-kilometre trail would allow a hundred and sixty of them. So it is
+ * roughly an eighth of the route, floored so that a very short walk still
+ * separates things a walker would see as separate, and allowed to grow on a
+ * long one so the list stays readable.
+ */
+function minGap(total) {
+  return Math.max(Math.min(250, total / 8), total / 60, 60);
+}
+
+/**
+ * How much of each end is "the start" or "the finish".
+ *
+ * A landmark inside this is that end of the route under another name, and its
+ * disc would sit on top of the flag. The same reasoning as the gap applies: a
+ * flat 150 m is a tenth of a 1.5 km loop at each end — nearly a quarter of the
+ * route ruled out — so it scales, with a floor for very short walks.
+ */
+function endpointClear(total) {
+  return Math.max(30, Math.min(150, total * 0.04));
+}
 
 /**
  * Build the ordered checkpoint list for a route.
@@ -109,13 +130,14 @@ export function buildCheckpoints(doc, waypoints = [], landmarks = []) {
  * taken keeps both the quality and the spacing.
  */
 function thin(candidates, total) {
-  const gap = Math.max(MIN_GAP_M, total / 60);
+  const gap = minGap(total);
+  const clear = endpointClear(total);
   const sorted = candidates.slice().sort((a, b) =>
     b.rank - a.rank || a.offset - b.offset || a.along - b.along);
 
   const kept = [];
   for (const c of sorted) {
-    if (c.along < ENDPOINT_CLEAR_M || c.along > total - ENDPOINT_CLEAR_M) continue;
+    if (c.along < clear || c.along > total - clear) continue;
     // the file's own pins are never dropped for crowding; they were chosen
     if (c.source !== 'file' && kept.length >= MAX_LANDMARKS) continue;
     if (kept.some(k => Math.abs(k.along - c.along) < gap

@@ -294,6 +294,7 @@ async function importFile(file) {
   // Hoisted, because the catch below needs to know whether there is already a
   // route worth opening.
   let record = null;
+  let placesFailed = false;
 
   try {
     // ── 1. the file ──
@@ -357,6 +358,7 @@ async function importFile(file) {
     } catch (err) {
       if (abort.signal.aborted) throw err;
       console.warn('places', err);
+      placesFailed = true;
       importStep('places', 'failed',
         'OpenStreetMap did not answer — you can search again from the map.');
     }
@@ -385,6 +387,12 @@ async function importFile(file) {
     $('#import').hidden = true;
     state.importAbort = null;
     await openRoute(record);
+    // "did not answer" and "not searched yet" are different facts; the row says
+    // which, and it is the thing that offers the retry.
+    if (placesFailed) {
+      state.searchFailed = true;
+      renderRouteAlert();
+    }
     if (warnings.length) toast(warnings[0]);
   } catch (err) {
     $('#import').hidden = true;
@@ -427,6 +435,8 @@ async function openRoute(record) {
   state.tracker = new ProgressTracker(state.route);
   state.pois = record.facilities || {};
   state.checkpoints = record.checkpoints || [];
+  state.searching = false;
+  state.searchFailed = false;
 
   document.body.classList.remove('no-route');
   $('#home').hidden = true;
@@ -448,9 +458,7 @@ async function openRoute(record) {
   startLocating();
   startWeather();
 
-  if (!record.placesFetchedAt) {
-    toast('No facilities found yet — search again from the layers panel');
-  }
+  renderRouteAlert();
 }
 
 async function leaveRoute() {
@@ -481,6 +489,7 @@ function teardownRoute() {
     accuracyRing: null, doneLine: null, lastFix: null, lastProgress: null,
     lastAccuracy: null, following: false, restored: false, saving: false,
     cluster: null, markersByCategory: null, trailsLoading: false,
+    searching: false, searchFailed: false,
   });
   closePanels();
 }
@@ -878,6 +887,12 @@ function buildLayerUI() {
       if (confirm('Delete the saved offline maps for every route from this device?')) clearSavedMaps();
     });
     $('#btn-refresh-pois').addEventListener('click', refreshPlaces);
+    $('#route-alert-go').addEventListener('click', refreshPlaces);
+    $('#route-alert-dismiss').addEventListener('click', () => {
+      dismissEmpty(state.id);
+      renderRouteAlert();
+      toast('Hidden — search again from the layers panel any time');
+    });
     $('#btn-export').addEventListener('click', exportGpx);
     $('#btn-delete-route').addEventListener('click', async () => {
       if (!confirm(`Remove “${state.record.doc.name}” and everything saved with it?`)) return;
@@ -890,6 +905,72 @@ function buildLayerUI() {
   $('#btn-refresh-pois').textContent = 'Search OpenStreetMap again';
   renderSaveState();
   renderRouteNote();
+}
+
+/**
+ * The one row that says whether this route still needs something.
+ *
+ * Four states, and the wording of each matters: "not searched yet", "the search
+ * failed", "nothing is mapped here" and "searching now" are four different
+ * facts, and a walker deciding whether to trust an empty map needs to know
+ * which one they are looking at. When there is nothing to say, the row is not
+ * there at all.
+ */
+/** Routes whose "nothing is mapped here" notice the walker has waved away. */
+const DISMISSED_KEY = 'gww-dismissed-empty';
+function dismissedEmpty() {
+  try { return JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]'); } catch { return []; }
+}
+function dismissEmpty(id) {
+  const list = dismissedEmpty();
+  if (!list.includes(id)) list.push(id);
+  // one entry per route, and nobody keeps hundreds; trimmed so it cannot grow
+  // without bound on a device used for years
+  try { localStorage.setItem(DISMISSED_KEY, JSON.stringify(list.slice(-50))); } catch { /* ignore */ }
+}
+
+function renderRouteAlert(extra) {
+  const row = $('#route-alert');
+  const txt = $('#route-alert-txt');
+  if (!row || !state.record) return;
+
+  const facilities = Object.values(state.pois).reduce((n, list) => n + list.length, 0);
+  const landmarks = (state.record.landmarks || []).length;
+  let state_ = null;
+  let title = '';
+  let sub = '';
+
+  if (state.searching) {
+    state_ = 'working';
+    title = 'Searching OpenStreetMap…';
+    sub = extra || 'along the route';
+  } else if (state.searchFailed) {
+    state_ = 'failed';
+    title = 'OpenStreetMap did not answer';
+    sub = 'Tap to try the search again';
+  } else if (!state.record.placesFetchedAt) {
+    state_ = 'failed';
+    title = 'Facilities not searched yet';
+    sub = 'Tap to find AEDs, toilets, water and landmarks on this route';
+  } else if (!facilities && !landmarks && !dismissedEmpty().includes(state.id)) {
+    state_ = 'empty';
+    title = 'Nothing mapped along this route';
+    sub = 'OpenStreetMap has no facilities here yet — tap to search again';
+  }
+
+  if (!state_) {
+    row.hidden = true;
+    state.measurePanels?.();
+    return;
+  }
+  row.dataset.state = state_;
+  $('#route-alert-go').disabled = state_ === 'working';
+  // Only the informational state is dismissable; "not searched" and "did not
+  // answer" are jobs, and a job you can hide is a job that gets forgotten.
+  $('#route-alert-dismiss').hidden = state_ !== 'empty';
+  txt.innerHTML = `<b>${escapeHtml(title)}</b><span>${escapeHtml(sub)}</span>`;
+  row.hidden = false;
+  state.measurePanels?.();
 }
 
 function renderPoiNote() {
@@ -908,11 +989,14 @@ function renderPoiNote() {
 function renderRouteNote() {
   const rec = state.record;
   const when = rec.placesFetchedAt
-    ? new Date(rec.placesFetchedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+    ? new Date(rec.placesFetchedAt).toLocaleDateString(undefined,
+      { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
+  const facilities = Object.values(state.pois).reduce((n, list) => n + list.length, 0);
   $('#route-note').textContent = [
-    rec.doc.source ? `From ${rec.doc.source}` : `Imported ${ago(rec.doc.importedAt)}`,
-    when ? `facilities searched ${when}` : 'facilities not searched yet',
+    when ? `Searched ${when} · ${facilities} facilities, ${(rec.landmarks || []).length} landmarks`
+      : 'Not searched yet',
+    rec.doc.source ? `from ${rec.doc.source}` : `imported ${ago(rec.doc.importedAt)}`,
     `${rec.doc.points.length.toLocaleString()} points`,
   ].join(' · ');
 }
@@ -970,17 +1054,68 @@ function drawTrails(ways) {
   if (box) box.checked = true;
 }
 
+/**
+ * Swap in a new set of facilities, landmarks and checkpoints.
+ *
+ * Deliberately *not* a re-open of the route. Re-opening would rebuild the map,
+ * and with it throw away the very things a walker mid-route cares about: where
+ * they had panned to, the zoom they chose, follow mode, and the progress the
+ * tracker holds in memory. Only the marker layers that actually changed are
+ * rebuilt.
+ */
+function applyPlaces(record) {
+  state.record = record;
+  state.pois = record.facilities || {};
+  state.checkpoints = record.checkpoints || [];
+
+  // What the walker had chosen to see. buildLayerUI writes the checkbox list
+  // from scratch with everything on, so a walker who had turned the car parks
+  // off would find them back — the search is not an invitation to undo their
+  // choices.
+  const wasOn = {};
+  for (const box of document.querySelectorAll('[data-layer]')) wasOn[box.dataset.layer] = box.checked;
+
+  if (state.cluster) state.map.removeLayer(state.cluster);
+  if (state.layers.checkpoints) state.map.removeLayer(state.layers.checkpoints);
+  buildPois();
+  buildCheckpointMarkers();
+  buildLayerUI();
+
+  for (const box of document.querySelectorAll('[data-layer]')) {
+    const key = box.dataset.layer;
+    const want = key === 'trails' ? state.map.hasLayer(state.layers.trails) : wasOn[key];
+    if (want == null || box.checked === want) continue;
+    box.checked = want;
+    // through the handler, so the layer itself follows the box
+    box.dispatchEvent(new Event('change'));
+  }
+  // not stored anywhere, so it has to be put back by hand
+  const follow = $('#chk-follow');
+  if (follow) follow.checked = state.following;
+
+  if (state.lastProgress) renderProgress(state.lastProgress, state.lastAccuracy);
+  renderRouteAlert();
+}
+
 /** Search OpenStreetMap again — coverage improves, and a failed import can retry. */
 async function refreshPlaces() {
+  if (state.searching) return;
   const btn = $('#btn-refresh-pois');
-  if (btn.disabled) return;
+  const routeAtStart = state.id;
+  state.searching = true;
+  state.searchFailed = false;
   btn.disabled = true;
   btn.textContent = 'Searching…';
+  renderRouteAlert();
+
   try {
     const places = await fetchPlaces(state.record.doc, {
       onProgress: (done, total, host) => {
-        btn.textContent = host ? `Asking ${host}…`
-          : total > 1 ? `Searching… ${done}/${total}` : 'Searching…';
+        if (state.id !== routeAtStart) return;
+        const where = total > 1 ? `section ${Math.min(done + 1, total)} of ${total}` : '';
+        const note = [host ? `asking ${host}` : 'along the route', where].filter(Boolean).join(' · ');
+        btn.textContent = host ? `Asking ${host}…` : 'Searching…';
+        renderRouteAlert(note);
       },
     });
     const checkpoints = buildCheckpoints(state.record.doc, state.record.waypoints, places.landmarks);
@@ -990,15 +1125,29 @@ async function refreshPlaces() {
       checkpoints,
       placesFetchedAt: places.fetchedAt,
     });
+    // The walk does not stop for the search: the route can have been closed, or
+    // another one opened, in the seconds this took. Applying the answer to a
+    // map that is no longer there would throw.
+    if (state.id !== routeAtStart || !state.map) return;
     const record = await loadRoute(state.id);
+    if (state.id !== routeAtStart || !state.map) return;
+    state.searching = false;
+    applyPlaces(record);
+
     const n = Object.values(places.facilities).reduce((sum, list) => sum + list.length, 0);
-    await openRoute(record);
-    toast(`${n} facilities and ${places.landmarks.length} landmarks along the route`);
+    toast(n || places.landmarks.length
+      ? `${n} facilities and ${places.landmarks.length} landmarks along the route`
+      : 'Nothing mapped along this route yet');
   } catch (err) {
     console.warn('refresh', err);
+    if (state.id === routeAtStart) state.searchFailed = true;
     toast('OpenStreetMap did not answer — try again in a moment');
+  } finally {
+    state.searching = false;
     btn.disabled = false;
     btn.textContent = 'Search OpenStreetMap again';
+    // the route may have been closed while this ran; there is then no row
+    if (state.record) renderRouteAlert();
   }
 }
 

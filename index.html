@@ -121,6 +121,29 @@
   </div>
 
   <p class="fineprint" id="hud-note"></p>
+
+  <!-- Present only when this route needs something doing: never searched, the
+       search failed or was skipped, or it genuinely found nothing. It states
+       which, re-runs the search on a tap, and reports its own progress. Inside
+       the route header rather than floating over the map, because it is a fact
+       about the route; outside #hud-body, so folding the panel away does not
+       hide it. -->
+  <div id="route-alert" class="route-alert" hidden>
+    <button type="button" class="ra-main" id="route-alert-go">
+      <svg class="ra-ico" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 5v6h-6"/>
+      </svg>
+      <span class="ra-txt" id="route-alert-txt"></span>
+    </button>
+    <!-- Only on the "nothing is mapped here" state: that one is information,
+         not a job, and a message the walker cannot act away would sit in the
+         route header for the whole walk. The permanent control stays in the
+         layers panel. -->
+    <button type="button" class="ra-dismiss" id="route-alert-dismiss" hidden
+            title="Dismiss" aria-label="Dismiss this notice">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
 </header>
 
 <!-- ── right: map controls ───────────────────────────────────────── -->
@@ -199,12 +222,12 @@
   <p class="fineprint" id="save-note"></p>
 
   <h2>This route</h2>
+  <button type="button" id="btn-refresh-pois" class="btn">Search OpenStreetMap again</button>
+  <p class="fineprint" id="route-note"></p>
   <div class="checks">
-    <button type="button" id="btn-refresh-pois" class="btn subtle">Search OpenStreetMap again</button>
     <button type="button" id="btn-export" class="btn subtle">Export route as GPX</button>
     <button type="button" id="btn-delete-route" class="btn subtle danger">Remove this route</button>
   </div>
-  <p class="fineprint" id="route-note"></p>
 
   <h2>Line colours</h2>
   <ul class="legend">
