@@ -12,6 +12,7 @@
 // Data © OpenStreetMap contributors, ODbL.
 
 import { projectOnto, sampleEvery } from './geo.js';
+import { cancelled, fetchWithTimeout } from './net.js';
 
 // Mirrors, tried in order. The main instance is the most complete and the most
 // often busy; the others are public mirrors that run the same software and the
@@ -37,7 +38,21 @@ const SAMPLE_STEP_M = 200;
 const MAX_POINTS_PER_QUERY = 140;
 const SEARCH_RADIUS_M = 1000;
 const TRAIL_RADIUS_M = 300;
+// What the server is told to spend on the query itself, once it starts work.
 const TIMEOUT_S = 90;
+
+// What *we* are willing to wait for an answer.
+//
+// A busy mirror does not turn a query away — it accepts the connection and
+// queues it, and without a deadline the app waits for that queue for ever. Two
+// rounds: a short one that moves briskly through all three mirrors and finds
+// whichever is healthy right now, then a patient one for the case where they
+// are all merely slow. Worst case, with every mirror hanging, is a bounded two
+// minutes during which the card names a different host every few seconds and
+// Cancel works throughout — rather than an unbounded wait saying nothing.
+const ROUND_TIMEOUTS_MS = [12000, 30000];
+// A pause between rounds, so a second pass is not simply the first pass again.
+const ROUND_PAUSE_MS = 1200;
 
 /** OSM tags → one of our categories, or null to ignore. Mirrors the reference app. */
 function classify(t) {
@@ -218,34 +233,47 @@ function corridorChunks(doc) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /**
- * Run one Overpass query, moving on to the next mirror when one will not answer.
+ * Run one Overpass query, moving on when a mirror will not answer.
  *
- * Public Overpass instances shed load by returning 429 and 504 rather than
- * queueing, and they do it often enough at peak that a single attempt against
- * a single host would fail for a good number of walkers. Each mirror gets two
- * tries with a growing pause, then the next mirror takes over.
+ * Public Overpass instances shed load in two different ways, and both have to
+ * be handled or a walker at a trailhead gets nothing. Some turn a query away
+ * with 429 or 504, which fails fast and is easy. Others accept it and queue it
+ * behind everything else, answering in their own time or not at all — and that
+ * one, left alone, is what makes the app look hung.
+ *
+ * Every attempt therefore has a deadline, and the mirrors are swept twice: a
+ * brisk pass that finds whichever is healthy right now, then a patient pass for
+ * when they are all merely slow. `onAttempt` reports which host is being tried
+ * so the screen can say so rather than sitting on one unchanging line.
  */
-async function runQuery(body, { signal } = {}) {
+async function runQuery(body, { signal, onAttempt } = {}) {
   let lastError = null;
-  for (const endpoint of ENDPOINTS) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  for (let round = 0; round < ROUND_TIMEOUTS_MS.length; round++) {
+    if (round) await sleep(ROUND_PAUSE_MS);
+    for (const endpoint of ENDPOINTS) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      if (attempt) await sleep(1500 * attempt);
+      const host = new URL(endpoint).host;
+      onAttempt?.(host, round);
       try {
-        const res = await fetch(endpoint, {
+        const res = await fetchWithTimeout(endpoint, {
           method: 'POST',
           body: new URLSearchParams({ data: body }),
+          timeoutMs: ROUND_TIMEOUTS_MS[round],
           signal,
         });
-        if (res.status === 429 || res.status === 504 || res.status === 503) {
-          lastError = new Error(`${new URL(endpoint).host} is busy (HTTP ${res.status})`);
+        if (res.status === 429 || res.status === 503 || res.status === 504) {
+          lastError = new Error(`${host} is busy (HTTP ${res.status})`);
           continue;
         }
-        if (!res.ok) throw new Error(`${new URL(endpoint).host}: HTTP ${res.status}`);
+        if (!res.ok) throw new Error(`${host}: HTTP ${res.status}`);
         return await res.json();
       } catch (err) {
-        if (err.name === 'AbortError') throw err;
-        lastError = err;
+        // The walker tapping Cancel is not a mirror failing; it stops everything.
+        if (cancelled(err, signal)) throw err;
+        lastError = err.name === 'TimeoutError'
+          ? new Error(`${host} did not answer within `
+            + `${ROUND_TIMEOUTS_MS[round] / 1000} s`)
+          : err;
       }
     }
   }
@@ -303,7 +331,11 @@ export async function fetchPlaces(doc, { signal, onProgress } = {}) {
 );
 out center tags;`;
 
-    const data = await runQuery(query, { signal });
+    const data = await runQuery(query, {
+      signal,
+      onAttempt: (host, round) => onProgress?.(i, chunks.length,
+        round ? `${host} — second try` : host),
+    });
     for (const el of data.elements || []) {
       const key = `${el.type}${el.id}`;
       if (seen.has(key)) continue;
@@ -377,7 +409,11 @@ export async function fetchTrails(doc, { signal, onProgress } = {}) {
     const query = `[out:json][timeout:${TIMEOUT_S}];
 way(around:${TRAIL_RADIUS_M},${chunks[i]})["highway"~"^(path|footway|track|steps|cycleway|pedestrian|bridleway|living_street)$"];
 out geom;`;
-    const data = await runQuery(query, { signal });
+    const data = await runQuery(query, {
+      signal,
+      onAttempt: (host, round) => onProgress?.(i, chunks.length,
+        round ? `${host} — second try` : host),
+    });
     for (const el of data.elements || []) {
       if (seen.has(el.id) || !el.geometry || el.geometry.length < 2) continue;
       seen.add(el.id);

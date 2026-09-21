@@ -104,6 +104,18 @@ function write() {
   fs.writeFileSync(path.join(OUT, 'loop.kml'), kml(loop({ lat0: 1.3520, r: 0.006 }), { name: 'Test KML' }));
   fs.writeFileSync(path.join(OUT, 'loop.kmz'), kmz(kml(loop({ lat0: 1.3600 }), { name: 'Zipped route' })));
   fs.writeFileSync(path.join(OUT, 'alps.gpx'), gpx(line(), { name: 'Alpine Traverse' }));
+  // a distinct route, so the hanging-mirror test cannot be answered from a
+  // route already saved on the device
+  // Distinct geometry, so it gets its own route id and cannot be answered from
+  // the saved copy of the first loop — but the same neighbourhood, so the
+  // stubbed facilities still fall inside its corridor.
+  fs.writeFileSync(path.join(OUT, 'hang.gpx'),
+    gpx(loop({ r: 0.005, n: 200 }), { name: 'Hang probe' }));
+  // and one more, for the case where every mirror hangs
+  fs.writeFileSync(path.join(OUT, 'stuck.gpx'),
+    gpx(loop({ r: 0.0058, n: 180 }), { name: 'Stuck probe' }));
+  fs.writeFileSync(path.join(OUT, 'cancel.gpx'),
+    gpx(loop({ r: 0.0062, n: 160 }), { name: 'Cancel probe' }));
   console.log(`fixtures written to ${OUT}`);
 }
 

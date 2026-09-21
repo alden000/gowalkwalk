@@ -187,6 +187,16 @@ function wireHome() {
   document.addEventListener('drop', ev => ev.preventDefault());
 
   $('#imp-cancel').addEventListener('click', () => {
+    state.importSkipped = false;
+    state.importAbort?.abort();
+  });
+  // Waiting out a busy OpenStreetMap mirror is not something anyone should have
+  // to do at a trailhead. Once the file itself has been read, the route is
+  // already usable — the line, the start, the finish, the progress tracking —
+  // so this abandons the search and opens it, leaving the facilities to a later
+  // tap of "Search OpenStreetMap again" in the layers panel.
+  $('#imp-skip').addEventListener('click', () => {
+    state.importSkipped = true;
     state.importAbort?.abort();
   });
   $('#btn-home').addEventListener('click', () => leaveRoute());
@@ -274,10 +284,16 @@ async function importFile(file) {
   state.importAbort = abort;
 
   $('#import').hidden = false;
+  $('#imp-skip').hidden = true;
+  state.importSkipped = false;
   $('#imp-file').textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
   $('#imp-note').textContent = 'This takes a few seconds and only happens once per route.';
   for (const li of document.querySelectorAll('#imp-steps li')) li.dataset.status = '';
   $('#imp-fill').style.width = '0%';
+
+  // Hoisted, because the catch below needs to know whether there is already a
+  // route worth opening.
+  let record = null;
 
   try {
     // ── 1. the file ──
@@ -301,7 +317,7 @@ async function importFile(file) {
       return;
     }
 
-    const record = {
+    record = {
       id,
       doc,
       waypoints,
@@ -319,12 +335,18 @@ async function importFile(file) {
 
     // ── 2. what is on the ground ──
     importStep('places', 'active');
+    $('#imp-skip').hidden = false;
     try {
       const places = await fetchPlaces(doc, {
         signal: abort.signal,
-        onProgress: (done, total) => importStep('places', 'active',
-          total > 1 ? `Searching OpenStreetMap… section ${Math.min(done + 1, total)} of ${total}`
-            : 'Searching OpenStreetMap along the route…'),
+        // Naming the mirror matters more than it looks. The search is the slow
+        // step, and a public Overpass instance can sit on a query for half a
+        // minute before another one answers in two seconds; a line that changes
+        // as each is tried is the difference between "working" and "hung".
+        onProgress: (done, total, host) => importStep('places', 'active',
+          [total > 1 ? `Section ${Math.min(done + 1, total)} of ${total}` : null,
+            host ? `asking ${host}` : 'Searching OpenStreetMap along the route…']
+            .filter(Boolean).join(' · ')),
       });
       record.facilities = places.facilities;
       record.landmarks = places.landmarks;
@@ -368,6 +390,15 @@ async function importFile(file) {
     $('#import').hidden = true;
     state.importAbort = null;
     if (abort.signal.aborted) {
+      // Skipped rather than cancelled: the file was read, so open what there is.
+      if (state.importSkipped && record) {
+        state.importSkipped = false;
+        record.checkpoints = buildCheckpoints(record.doc, record.waypoints, record.landmarks);
+        await saveRoute(record);
+        await openRoute(record);
+        toast('Opened without the facility search — search again from the layers panel');
+        return;
+      }
       toast('Import cancelled');
       await renderRouteList();
       return;
@@ -947,8 +978,9 @@ async function refreshPlaces() {
   btn.textContent = 'Searching…';
   try {
     const places = await fetchPlaces(state.record.doc, {
-      onProgress: (done, total) => {
-        btn.textContent = total > 1 ? `Searching… ${done}/${total}` : 'Searching…';
+      onProgress: (done, total, host) => {
+        btn.textContent = host ? `Asking ${host}…`
+          : total > 1 ? `Searching… ${done}/${total}` : 'Searching…';
       },
     });
     const checkpoints = buildCheckpoints(state.record.doc, state.record.waypoints, places.landmarks);

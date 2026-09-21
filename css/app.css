@@ -1144,7 +1144,9 @@ body.no-route #sos { display: none; }
   overflow: hidden;
 }
 .imp-fill { height: 100%; width: 0; background: var(--accent); transition: width .35s ease; }
-.imp-card .btn { width: 100%; margin-top: 12px; }
+.imp-actions { display: grid; gap: 6px; margin-top: 12px; }
+.imp-card .btn { width: 100%; margin-top: 0; }
+.imp-card .btn[hidden] { display: none; }
 
 /* ── the emergency contact form ── */
 /* `display: grid` on a class beats the user agent's own [hidden] rule, so the

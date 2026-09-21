@@ -29,7 +29,8 @@ does, this one does for whatever route you hand it.
    page.
 2. It reads the line, searches OpenStreetMap along it, fills in the climbing if
    the file has none, and works out the checkpoints. A few seconds, once per
-   route.
+   route — and if OpenStreetMap's mirrors are busy, **Open the map anyway** gets
+   you straight to the route and leaves the facilities for later.
 3. The route is then **on the device**. It opens instantly next time, works with
    the radio off, and appears in the list on the home screen.
 
@@ -225,9 +226,13 @@ Singapore.
 - **OpenStreetMap coverage varies.** An empty facility list can mean nobody has
   mapped them yet, not that they are not there. The layers panel says so rather
   than showing a confident zero.
-- **Overpass mirrors shed load** by returning 429 and 504 at peak. Three mirrors
-  are tried with backoff; if all refuse, the route still imports and you can
-  search again from the map.
+- **Overpass mirrors shed load** in two ways, and the second is the nasty one:
+  some refuse with 429 or 504, others accept the query and queue it, answering
+  in their own time or never. Every request therefore has a deadline, and the
+  three mirrors are swept twice — briskly, then patiently — with the import card
+  naming whichever is being tried. **Open the map anyway** abandons the search
+  at any point and opens the route without it; the facilities can be filled in
+  later with *Search OpenStreetMap again* in the layers panel.
 - **Landmarks are ranked by tags**, which is a proxy for interest, not a
   substitute for someone who knows the route. Your own waypoints always win.
 - **Terrain elevation** (when the file has none) comes from a 90 m DEM sampled
@@ -262,6 +267,7 @@ js/overpass.js        the OpenStreetMap searches and the tag → category rules
 js/checkpoints.js     landmarks + file pins → the ordered checkpoint list
 js/geo.js             route indexing, projection, progress tracking, simplify
 js/elevation.js       terrain sampling where the file has no elevation
+js/net.js             fetch with a deadline on every request
 js/store.js           IndexedDB: routes, facilities, trails
 js/weather.js         NEA and Open-Meteo behind one model
 js/basemaps.js        the base map list and tile URL handling

@@ -11,6 +11,7 @@
 // result is stored with the route so it is fetched once.
 
 import { bounds, elevationGain } from './geo.js';
+import { fetchJson } from './net.js';
 
 const API = 'https://api.open-meteo.com/v1/elevation';
 // The service takes up to 100 coordinates per request.
@@ -18,6 +19,8 @@ const BATCH = 100;
 // Six requests is enough shape for an ascent figure; beyond that the DEM's own
 // 90 m resolution is the limit, not the sampling.
 const MAX_SAMPLES = 600;
+// The ascent figure is a nice-to-have; the import must not stall on it.
+const TIMEOUT_MS = 20000;
 
 /**
  * Sample terrain height along the route and write it into the document.
@@ -38,9 +41,7 @@ export async function fillElevation(doc, { signal } = {}) {
     const slice = indices.slice(i, i + BATCH);
     const url = `${API}?latitude=${slice.map(j => doc.points[j][0].toFixed(5)).join(',')}`
       + `&longitude=${slice.map(j => doc.points[j][1].toFixed(5)).join(',')}`;
-    const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error(`elevation: HTTP ${res.status}`);
-    const body = await res.json();
+    const body = await fetchJson(url, { signal, timeoutMs: TIMEOUT_MS });
     if (!Array.isArray(body.elevation)) throw new Error('elevation: unexpected response');
     heights.push(...body.elevation);
   }

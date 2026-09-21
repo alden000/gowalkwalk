@@ -100,6 +100,8 @@ function trailsPayload(lat, lon) {
 
 const NEA_OK = { code: 0, data: {} };
 let overpassCalls = 0;
+let hungCalls = 0;
+let hangingMirrors = [];
 let weatherProvider = null;
 
 async function stub(context, { lat, lon }) {
@@ -108,6 +110,12 @@ async function stub(context, { lat, lon }) {
     if (url.startsWith(`http://localhost:${PORT}`)) return route.continue();
 
     if (url.includes('overpass')) {
+      // A mirror that accepts the query and never answers — the failure mode
+      // that used to leave the import card frozen on "Searching…" for ever.
+      if (hangingMirrors.some(h => url.includes(h))) {
+        hungCalls++;
+        return new Promise(() => {});
+      }
       overpassCalls++;
       const body = route.request().postData() || '';
       const payload = body.includes('highway') ? trailsPayload(lat, lon) : overpassPayload(lat, lon);
@@ -382,6 +390,76 @@ function check(name, ok, extra = '') {
   check('a track-less GPX is refused clearly',
     /No track or route points/.test(await page.textContent('#home-err')));
 
+  // ── a mirror that hangs must not hang the import ──
+  // Overpass instances shed load by queueing rather than refusing, so the first
+  // mirror can accept a query and simply never answer. Before the request
+  // deadline existed, that left this card frozen with no way forward.
+  // the junk-file check above left the app on the home screen already
+  await page.waitForSelector('#home:not([hidden])');
+  hangingMirrors = ['overpass-api.de'];
+  hungCalls = 0;
+  const hangStarted = Date.now();
+  await page.setInputFiles('#file', path.join(TMP, 'hang.gpx'));
+  const survived = await page.waitForSelector('body:not(.no-route)', { timeout: 60000 })
+    .then(() => true).catch(() => false);
+  const hangSeconds = (Date.now() - hangStarted) / 1000;
+  check('a hanging mirror is abandoned, not waited on', survived && hangSeconds < 45,
+    `${hangSeconds.toFixed(1)}s, ${hungCalls} hung request(s)`);
+  check('the healthy mirror still supplies the facilities',
+    await page.evaluate(() => document.querySelectorAll('.leaflet-marker-icon').length) > 3);
+
+  // ── every mirror hanging: the card must keep moving, and Cancel must work ──
+  await page.click('#btn-home');
+  await page.waitForSelector('#home:not([hidden])');
+  hangingMirrors = ['overpass-api.de', 'kumi.systems', 'private.coffee'];
+  const hosts = new Set();
+  await page.setInputFiles('#file', path.join(TMP, 'stuck.gpx'));
+  await page.waitForSelector('#import:not([hidden])');
+  for (let i = 0; i < 30; i++) {
+    const note = await page.textContent('#imp-note').catch(() => '');
+    const host = /asking (\S+)/.exec(note)?.[1];
+    if (host) hosts.add(host);
+    if (hosts.size >= 3) break;
+    await page.waitForTimeout(1000);
+  }
+  check('all mirrors hanging: the card works through them',
+    hosts.size >= 3, [...hosts].join(', '));
+  check('"Open the map anyway" is offered once the file is read',
+    await page.isVisible('#imp-skip'));
+  await page.click('#imp-skip');
+  await page.waitForSelector('body:not(.no-route)', { timeout: 15000 });
+  check('skipping the search still opens the route',
+    (await page.textContent('#hud-name')) === 'Stuck probe');
+  check('a skipped route keeps its start and finish from the file',
+    await page.evaluate(async () => {
+      const m = await import('/js/store.js');
+      const rec = await m.loadRoute(m.lastRouteId());
+      const last = rec.doc.points[rec.doc.points.length - 1];
+      return rec.checkpoints.length === 2
+        && rec.checkpoints[0].along === 0
+        && rec.checkpoints[1].lat === last[0];
+    }));
+  hangingMirrors = [];
+
+  // and the facilities can be filled in later, once a mirror answers
+  await page.click('#btn-layers');
+  await page.click('#btn-refresh-pois');
+  await page.waitForSelector('body:not(.no-route)', { timeout: 30000 });
+  await page.waitForTimeout(800);
+  check('searching again fills in what the skip left out',
+    await page.evaluate(() => document.querySelectorAll('.leaflet-marker-icon').length) > 3);
+
+  // ── Cancel, on a fresh file, goes back to the library ──
+  await page.click('#btn-home');
+  await page.waitForSelector('#home:not([hidden])');
+  hangingMirrors = ['overpass-api.de', 'kumi.systems', 'private.coffee'];
+  await page.setInputFiles('#file', path.join(TMP, 'cancel.gpx'));
+  await page.waitForSelector('#import:not([hidden])');
+  await page.click('#imp-cancel');
+  await page.waitForSelector('#import', { state: 'hidden', timeout: 10000 });
+  check('Cancel gets you out of a stuck search', await page.isVisible('#drop'));
+  hangingMirrors = [];
+
   // ── offline: the claim the whole app is built around ──
   // The service worker has to be controlling the page before this means
   // anything, so the page is reloaded once to let it take over.
@@ -399,7 +477,9 @@ function check(name, ok, extra = '') {
       name: document.querySelector('#hud-name')?.textContent,
       markers: document.querySelectorAll('.leaflet-marker-icon').length,
     }));
-    check('route opens with the radio off', offline.name === 'Test Loop' && offline.markers > 3,
+    // Whichever route was open last: what is being tested is that the line,
+    // its facilities and its checkpoints all came back from the device.
+    check('route opens with the radio off', !!offline.name && offline.markers > 3,
       JSON.stringify(offline));
     await context.setOffline(false);
   }

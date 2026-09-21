@@ -13,7 +13,7 @@
 // The routes themselves are not here. They live in IndexedDB, written as they
 // are imported, which is what makes a route usable offline — not this cache.
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL_CACHE = `gww-shell-${VERSION}`;
 const TILE_CACHE = `gww-tiles-${VERSION}`;
 const MAX_TILES = 1200;
@@ -53,6 +53,7 @@ const SHELL = [
   'js/elevation.js',
   'js/geo.js',
   'js/icons.js',
+  'js/net.js',
   'js/overpass.js',
   'js/routefile.js',
   'js/store.js',

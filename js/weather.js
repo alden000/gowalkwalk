@@ -17,6 +17,7 @@
 // blank.
 
 import { haversine } from './geo.js';
+import { cancelled, fetchJson } from './net.js';
 
 const NEA_BASE = 'https://api-open.data.gov.sg/v2/real-time/api';
 const OM_FORECAST = 'https://api.open-meteo.com/v1/forecast';
@@ -115,17 +116,20 @@ function fromWmo(code, isNight = false) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-/** Fetch one JSON feed, retrying a couple of times. */
+// A feed that never answers must not leave the card on "Loading…" for ever;
+// the panel refreshes every five minutes anyway, so giving up quickly and
+// showing the last good reading beats waiting.
+const FEED_TIMEOUT_MS = 15000;
+
+/** Fetch one JSON feed, retrying a couple of times, with a deadline on each. */
 async function getJSON(url, signal, attempts = 3) {
   let lastError;
   for (let i = 0; i < attempts; i++) {
     if (i) await sleep(400 * i);
     try {
-      const res = await fetch(url, { signal, cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+      return await fetchJson(url, { signal, cache: 'no-store', timeoutMs: FEED_TIMEOUT_MS });
     } catch (err) {
-      if (signal?.aborted) throw err;
+      if (cancelled(err, signal)) throw err;
       lastError = err;
     }
   }
