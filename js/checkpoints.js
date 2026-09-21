@@ -6,10 +6,12 @@
 //
 //   the file's own pins   a waypoint in the GPX or KML is a deliberate choice
 //                         by whoever drew the route, so it is always kept
-//   OpenStreetMap         the named landmarks and attractions the route passes
+//   the landmark search   the named things the route passes, wherever they were
+//                         found: OpenStreetMap everywhere, and in Singapore the
+//                         NParks and STB registers alongside it
 //
 // Start and finish always come from the route file itself, as the first and
-// last point of the line — never from OpenStreetMap, and never guessed.
+// last point of the line — never from a search, and never guessed.
 
 import { projectOnto } from './geo.js';
 
@@ -106,7 +108,8 @@ export function buildCheckpoints(doc, waypoints = [], landmarks = []) {
       name: l.name,
       note: l.note || l.kind || '',
       photo: l.photo || null,
-      source: 'osm',
+      source: l.source || 'osm',
+      approximate: l.approximate || false,
       rank: l.rank,
       along: l.along,
       offset: l.offset,

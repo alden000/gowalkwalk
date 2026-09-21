@@ -21,6 +21,7 @@ import { fetchPlaces, fetchTrails, MAX_OFFSET_M } from './overpass.js';
 import { fillElevation } from './elevation.js';
 import { coversRoute, mergeAeds, openAt, sgAedsAlong, todayLabel } from './aed.js';
 import { nparksAlong, touchesReserves } from './nparks.js';
+import { attractionsAlong, touchesAttractions } from './stb.js';
 import { buildCheckpoints } from './checkpoints.js';
 import {
   routeId, saveRoute, savePlaces, loadRoute, listRoutes, deleteRoute,
@@ -493,7 +494,8 @@ async function refreshOfficialSources() {
     for (const [cat, list] of Object.entries(record.facilities || {})) {
       fromOsm[cat] = list.filter(p => p.source !== 'scdf' && p.source !== 'nparks');
     }
-    const osmLandmarks = (record.landmarks || []).filter(l => l.source !== 'nparks');
+    const osmLandmarks = (record.landmarks || [])
+      .filter(l => l.source !== 'nparks' && l.source !== 'stb');
     const merged = await withOfficialSources(record.doc, fromOsm, osmLandmarks);
     if (state.id !== id || !state.map) return;          // the walker moved on
 
@@ -753,6 +755,21 @@ function photoHtml(photo) {
   </figure>`;
 }
 
+/**
+ * Where a checkpoint came from, said on the marker itself.
+ *
+ * OpenStreetMap is the default and says nothing — a line on every popup that
+ * carries no decision is noise. The others are worth naming: a pin the walker
+ * drew is theirs, and a register's entry is somebody's official record, which
+ * is a different kind of claim from a crowd-sourced one.
+ */
+const CHECKPOINT_SOURCE = {
+  file: ' · from your file',
+  stb: ' · Singapore Tourism Board',
+  nparks: ' · National Parks Board',
+  osm: '',
+};
+
 function buildCheckpointMarkers() {
   const group = L.layerGroup();
   state.checkpoints.forEach((cp, i) => {
@@ -768,7 +785,8 @@ function buildCheckpointMarkers() {
         (cp.note ? `<div class="pop-d">${escapeHtml(cp.note)}</div>` : '') +
         `<div class="pop-m">km ${(cp.along / 1000).toFixed(2)} · ${formatDistance(remaining)} to finish` +
         (cp.offset > 40 ? ` · ${cp.offset} m off the path` : '') +
-        (cp.source === 'file' ? ' · from your file' : '') + '</div>',
+        (cp.approximate ? ' · position approximate' : '') +
+        (CHECKPOINT_SOURCE[cp.source] || '') + '</div>',
         { maxWidth: cp.photo ? 280 : 300 })
       .addTo(group);
   });
@@ -1102,12 +1120,19 @@ function renderRouteNote() {
       { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
   const facilities = Object.values(state.pois).reduce((n, list) => n + list.length, 0);
+  const landmarks = rec.landmarks || [];
+  // Name the registers that contributed, next to the count they contributed
+  // to. A number with no provenance is a number a walker cannot weigh.
+  const fromStb = landmarks.filter(l => l.source === 'stb').length;
+  const fromNParks = landmarks.filter(l => l.source === 'nparks').length;
   $('#route-note').textContent = [
-    when ? `Searched ${when} · ${facilities} facilities, ${(rec.landmarks || []).length} landmarks`
+    when ? `Searched ${when} · ${facilities} facilities, ${landmarks.length} landmarks`
       : 'Not searched yet',
+    fromStb ? `${fromStb} of them © Singapore Tourism Board` : '',
+    fromNParks ? `${fromNParks} © National Parks Board` : '',
     rec.doc.source ? `from ${rec.doc.source}` : `imported ${ago(rec.doc.importedAt)}`,
     `${rec.doc.points.length.toLocaleString()} points`,
-  ].join(' · ');
+  ].filter(Boolean).join(' · ');
 }
 
 /** Fetch the footpath network the first time somebody asks to see it. */
@@ -1233,10 +1258,11 @@ function mergeByProximity(official = [], osm = []) {
 /**
  * Fold the official Singapore registers into what OpenStreetMap found.
  *
- * Two of them, each consulted only over the ground it describes: SCDF's
- * defibrillators nationally, and NParks' amenities across the reserves. Never
- * fatally — a register that will not load leaves the OpenStreetMap results
- * exactly as they were, which is what the app had before any of this existed.
+ * Three of them, each consulted only over the ground it describes: SCDF's
+ * defibrillators nationally, NParks' amenities across the reserves, and STB's
+ * attractions across the city. Never fatally — a register that will not load
+ * leaves the OpenStreetMap results exactly as they were, which is what the app
+ * had before any of this existed.
  */
 async function withOfficialSources(doc, facilities, landmarks, { signal } = {}) {
   const out = { facilities: { ...facilities }, landmarks: landmarks.slice(), added: [] };
@@ -1270,6 +1296,19 @@ async function withOfficialSources(doc, facilities, landmarks, { signal } = {}) 
     } catch (err) {
       if (signal?.aborted) throw err;
       console.warn('nparks register', err);
+    }
+
+    try {
+      if (await touchesAttractions(doc.bounds, { signal })) {
+        const stb = await attractionsAlong(doc, { signal });
+        if (stb.landmarks.length) {
+          out.landmarks = mergeByProximity(stb.landmarks, out.landmarks);
+          out.added.push(`${stb.landmarks.length} attractions from STB`);
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      console.warn('attraction register', err);
     }
   }
   return out;

@@ -13,7 +13,7 @@
 // The routes themselves are not here. They live in IndexedDB, written as they
 // are imported, which is what makes a route usable offline — not this cache.
 
-const VERSION = 'v8';
+const VERSION = 'v9';
 const SHELL_CACHE = `gww-shell-${VERSION}`;
 const TILE_CACHE = `gww-tiles-${VERSION}`;
 const MAX_TILES = 1200;
@@ -49,15 +49,16 @@ const SHELL = [
   'css/app.css',
   'js/aed.js',
   'js/app.js',
-  'js/nparks.js',
   'js/basemaps.js',
   'js/checkpoints.js',
   'js/elevation.js',
   'js/geo.js',
   'js/icons.js',
   'js/net.js',
+  'js/nparks.js',
   'js/overpass.js',
   'js/routefile.js',
+  'js/stb.js',
   'js/store.js',
   'js/weather.js',
   'vendor/leaflet.js',
@@ -72,11 +73,13 @@ const SHELL = [
   'icons/icon-maskable-512.png',
 ];
 
-// data/aed-sg.json is deliberately NOT precached. It is nine hundred kilobytes
-// of Singapore defibrillators, and most walkers are not in Singapore; making
-// every install pay for it would be rude. It is same-origin, so the handler
-// below keeps a copy the first time a Singapore route actually asks for it,
-// and from then on it works offline like everything else.
+// The registers under data/ are deliberately NOT precached. Between them —
+// SCDF's defibrillators, NParks' park amenities, STB's attractions — they are
+// most of a megabyte of Singapore, and most walkers are not in Singapore;
+// making every install pay for that would be rude. They are same-origin, so
+// the handler below keeps a copy of each the first time a Singapore route
+// actually asks for it, and from then on they work offline like everything
+// else.
 
 // Every host the base maps fetch tiles from. OpenTopoMap is served from three
 // subdomains, so this is matched as a suffix rather than by equality.

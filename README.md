@@ -90,6 +90,11 @@ route. Here they are assembled, in this order of trust:
 2. **Named landmarks from OpenStreetMap** within 350 m of the line: viewpoints,
    summits, waterfalls, cave entrances, monuments, memorials, ruins, towers,
    museums, nature reserves and the like.
+3. **In Singapore, the NParks and STB registers** over the same 350 m, on the
+   same ranking — an STB attraction scores exactly what OpenStreetMap's
+   `tourism=attraction` scores, so the tie is broken on distance from the route
+   rather than on which source the app happens to prefer. Each marker names the
+   register it came from.
 
 Where OpenStreetMap carries a `wikimedia_commons` or `image` tag — mappers
 regularly do on summits, viewpoints, monuments and huts — the photograph appears
@@ -104,19 +109,20 @@ for a 13 km event route and eats a quarter of a 1.2 km loop round a park.
 
 ### Official Singapore sources
 
-OpenStreetMap is the backbone everywhere, and in Singapore two government
-registers fill gaps it cannot. Both ship with the app, are consulted only over
-the ground they describe, and are merged with the OpenStreetMap results rather
-than replacing them — de-duplicated at 40 m, with the official record winning
-because it carries the name on the sign.
+OpenStreetMap is the backbone everywhere, and in Singapore three government
+registers fill gaps it cannot. All three ship with the app, are consulted only
+over the ground they describe, and are merged with the OpenStreetMap results
+rather than replacing them — de-duplicated at 40 m, with the official record
+winning because it carries the name on the sign.
 
 | Register | What it adds | Where |
 | --- | --- | --- |
 | **SCDF, Public Access AEDs** | 9,644 defibrillators with opening hours | Singapore |
 | **NParks, Central Nature Reserve Amenities** | 97 shelters and huts by name, 18 toilets, 18 car parks, towers and wartime remains | The central reserves and southern ridges |
+| **STB, Tourist Attractions** | 106 attractions, each with a sentence saying what it is | The city and the parks |
 
-`.github/workflows/refresh-aed.yml` checks both daily and rebuilds only what
-has actually changed.
+`.github/workflows/refresh-aed.yml` checks all three daily and rebuilds only
+what has actually changed.
 
 ### Defibrillators in Singapore
 
@@ -148,6 +154,40 @@ without anyone having to press anything.
 
     python3 tools/fetch_aed.py               # rebuild now
     python3 tools/fetch_aed.py --if-changed  # rebuild only if SCDF have published
+
+### Attractions in Singapore
+
+OpenStreetMap can tell you the building on South Bridge Road is a Hindu temple.
+The Singapore Tourism Board's list knows it is Sri Mariamman and says so in a
+sentence you can read standing in front of it — which is the difference between
+a checkpoint that names something and a checkpoint worth walking to. A lap of
+the Civic District picks up twenty-two of them; six become checkpoints, each
+with its own line of description.
+
+The published file is a website's content export rather than a gazetteer, and
+`tools/fetch_attractions.py` repairs four faults in it, all found by looking:
+
+- **The latitudes are rounded to three decimals** — about 110 m — while the
+  longitudes carry five or six. Each address is re-geocoded through OneMap's
+  public search and the answer taken only when it agrees with the published
+  point to within 300 m; 79 of 106 are refined this way. The rest keep the
+  published point, and their markers say **position approximate**, because a
+  pin that might be a hundred metres out should not pretend otherwise.
+- **The text is mojibake** — UTF-8 read as Windows-1252, so apostrophes arrive
+  as `â€™`. Repaired with a cp1252 round trip; latin-1 silently fails on
+  exactly the characters that need it.
+- **The titles are written for search engines** — "Sri Mariamman Temple: Hindu
+  Temple in Singapore", "Kranji War Memorial Landmark in Singapore" — and a map
+  label needs the name. Every rule was written against all 106 real titles and
+  checked against all of them.
+- **The same place is listed twice** under two titles, so near-identical names
+  within 400 m are collapsed.
+
+The images are dropped (their domain no longer resolves) and so are the opening
+hours (free-form prose, last edited in 2015 — stale hours are worse than none).
+
+    python3 tools/fetch_attractions.py               # rebuild now
+    python3 tools/fetch_attractions.py --if-changed  # only if STB have published
 
 ### Trails
 
@@ -344,14 +384,16 @@ js/elevation.js       terrain sampling where the file has no elevation
 js/net.js             fetch with a deadline on every request
 js/aed.js             SCDF's Singapore AED register: opening hours, merging
 js/nparks.js          NParks' reserve amenities and landmarks
+js/stb.js             STB's attractions, as described landmarks
 data/aed-sg.json      those registers, built by tools/fetch_*.py
 data/nparks-sg.json
+data/stb-sg.json
 js/store.js           IndexedDB: routes, facilities, trails
 js/weather.js         NEA and Open-Meteo behind one model
 js/basemaps.js        the base map list and tile URL handling
 js/icons.js           inline SVG markers and weather glyphs
 sw.js                 precache, tile strategy, the offline map download
-tools/                icon artwork and its rasteriser
+tools/                the register builders, the icon artwork and its rasteriser
 test/                 end-to-end test
 ```
 
@@ -391,6 +433,9 @@ python3 tools/rasterise.py           # writes the three PNGs
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Singapore park amenities: © National Parks Board, via
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
+- Singapore attractions: © Singapore Tourism Board, via
+  [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence;
+  their positions refined with © Singapore Land Authority's OneMap search.
 - Weather and air quality: [NEA](https://data.gov.sg/) via data.gov.sg in
   Singapore; [Open-Meteo](https://open-meteo.com/) elsewhere.
 - Elevation: Copernicus DEM via Open-Meteo.

@@ -1,10 +1,11 @@
 name: Refresh the official Singapore data
 
-# Two registers, published on data.gov.sg irregularly: SCDF's defibrillators
-# (roughly once a year, in practice) and NParks' reserve amenities (which moved
-# five days before this was written). The check runs daily anyway, because the
-# cost of asking is a few hundred bytes of metadata each and the cost of being
-# a year stale is a walker sent to a defibrillator that has moved.
+# Three registers, published on data.gov.sg irregularly: SCDF's defibrillators
+# (roughly once a year, in practice), NParks' reserve amenities (which moved
+# five days before this was written) and STB's attractions. The check runs
+# daily anyway, because the cost of asking is a few hundred bytes of metadata
+# each and the cost of being a year stale is a walker sent to a defibrillator
+# that has moved.
 #
 # Only a genuine change downloads a register and commits the rebuilt file; an
 # unchanged day touches nothing at all. The commit lands on the working branch,
@@ -40,25 +41,32 @@ jobs:
       - name: Rebuild the NParks amenity register if it changed
         run: python3 tools/fetch_nparks.py --if-changed
 
+      # Slower than the other two: it re-geocodes every address through OneMap,
+      # politely, which is a couple of minutes. Only on a day STB republishes.
+      - name: Rebuild the STB attraction register if it changed
+        run: python3 tools/fetch_attractions.py --if-changed
+
       - name: Commit whatever changed
         run: |
           if git diff --quiet -- data/; then
-            echo "no change to either register"
+            echo "no change to any register"
             exit 0
           fi
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           aed = json.load(open('data/aed-sg.json'))
           park = json.load(open('data/nparks-sg.json'))
+          stb = json.load(open('data/stb-sg.json'))
           print(f"SCDF {aed['sourceUpdatedAt'][:10]}: {len(aed['aed']):,} AEDs. "
                 f"NParks {park['sourceUpdatedAt'][:10]}: {len(park['places'])} amenities, "
-                f"{len(park['landmarks'])} landmarks.")
+                f"{len(park['landmarks'])} landmarks. "
+                f"STB {stb['sourceUpdatedAt'][:10]}: {len(stb['attractions'])} attractions.")
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/
           git commit -m "Refresh the official Singapore registers
 
-          Rebuilt by .github/workflows/refresh-aed.yml from the copies SCDF and
-          NParks publish on data.gov.sg. Data only; no code changed."
+          Rebuilt by .github/workflows/refresh-aed.yml from the copies SCDF,
+          NParks and STB publish on data.gov.sg. Data only; no code changed."
           git push

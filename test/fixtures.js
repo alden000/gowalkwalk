@@ -153,6 +153,14 @@ function write() {
   fs.writeFileSync(path.join(OUT, 'loop.kml'), kml(loop({ lat0: 1.3520, r: 0.006 }), { name: 'Test KML' }));
   fs.writeFileSync(path.join(OUT, 'loop.kmz'), kmz(kml(loop({ lat0: 1.3600 }), { name: 'Zipped route' })));
   fs.writeFileSync(path.join(OUT, 'alps.gpx'), gpx(line(), { name: 'Alpine Traverse' }));
+  // A lap of the Civic District, which is where the Singapore Tourism Board's
+  // attractions are thickest: twenty-two of them fall inside this corridor,
+  // four of them on the published, rounded coordinate rather than a geocoded
+  // one. The MacRitchie loop above passes none — its nearest is 687 m off —
+  // so the attraction register needs a route in town to be tested at all.
+  fs.writeFileSync(path.join(OUT, 'civic.gpx'),
+    gpx(loop({ lat0: 1.2895, lon0: 103.8520, r: 0.0035, n: 200, ele: false }),
+      { name: 'Civic District Lap' }));
   // a distinct route, so the hanging-mirror test cannot be answered from a
   // route already saved on the device
   // Distinct geometry, so it gets its own route id and cannot be answered from

@@ -456,6 +456,69 @@ function check(name, ok, extra = '') {
   await page.waitForSelector('body:not(.no-route)', { timeout: 30000 });
   check('KMZ unzipped and read', (await page.textContent('#hud-name')) === 'Zipped route');
 
+  // ── STB's attractions, on a route through town ──
+  // The MacRitchie loop passes none of them, so this is the only route in the
+  // suite that exercises the register at all.
+  await page.click('#btn-home');
+  await page.waitForSelector('#home:not([hidden])');
+  await page.setInputFiles('#file', path.join(TMP, 'civic.gpx'));
+  await page.waitForSelector('body:not(.no-route)', { timeout: 30000 });
+  await page.waitForTimeout(1200);
+  const stb = await page.evaluate(async () => {
+    const m = await import('/js/store.js');
+    const rec = await m.loadRoute(m.lastRouteId());
+    const mine = (rec.landmarks || []).filter(l => l.source === 'stb');
+    return {
+      n: mine.length,
+      names: mine.map(l => l.name),
+      described: mine.filter(l => /\w\s\w/.test(l.note)).length,
+      approximate: mine.filter(l => l.approximate).length,
+      seo: mine.filter(l => /Singapore:|YourSingapore|Things to Do/i.test(l.name)).length,
+      mojibake: mine.filter(l => /â€|â„/.test(l.name + l.note)).length,
+      // the same three, under the titles STB actually publishes, are
+      // "Civic District, Singapore", "The Cenotaph - a Singapore War Memorial
+      // Landmark" and "Merlion Park, Singapore: Attractions & Things to Do"
+      cleaned: ['Civic District', 'The Cenotaph', 'Merlion Park']
+        .filter(n => mine.some(l => l.name === n)).length,
+      // mojibake in reverse: the apostrophe in St Andrew's arrives as "â€™",
+      // so a real one proves the repair ran rather than the string being ASCII
+      curly: mine.filter(l => /[\u2018\u2019\u201c\u201d\u2013]/.test(l.name + l.note)).length,
+      checkpoints: (rec.checkpoints || []).filter(c => c.source === 'stb').length,
+    };
+  });
+  check('STB attractions are merged in for a route through town',
+    stb.n > 10, `${stb.n}: ${stb.names.slice(0, 4).join(', ')}`);
+  check('every attraction carries a sentence about itself',
+    stb.n > 10 && stb.described === stb.n, `${stb.described} of ${stb.n}`);
+  check('an attraction on the published coordinate says it is approximate',
+    stb.approximate > 0 && stb.approximate < stb.n, `${stb.approximate} of ${stb.n}`);
+  check('the search-engine subtitles are gone from the names',
+    stb.cleaned === 3 && stb.seo === 0,
+    `${stb.cleaned}/3 cleaned; leftovers: ${stb.names.filter(n => /Singapore:|Things to Do/i.test(n)).join(' | ')}`);
+  check('the mojibake is gone from the names and the descriptions',
+    stb.curly > 0 && stb.mojibake === 0,
+    `${stb.curly} carry real typography, ${stb.mojibake} still mangled`);
+  check('attractions became checkpoints', stb.checkpoints > 2,
+    `${stb.checkpoints} of ${stb.n}`);
+  // the pin's own caveat and its provenance, on the marker where they are read
+  const pop = await page.evaluate(async () => {
+    const el = [...document.querySelectorAll('.leaflet-marker-icon')]
+      .find(e => /^[1-9]$/.test(e.textContent.trim()));
+    el?.click();
+    await new Promise(r => setTimeout(r, 500));
+    return document.querySelector('.leaflet-popup-content')?.textContent || '';
+  });
+  check('an attraction checkpoint names the register it came from',
+    /Singapore Tourism Board/.test(pop), pop.slice(0, 120));
+  await page.keyboard.press('Escape');
+  await page.click('#btn-layers');
+  await page.waitForSelector('#route-note');
+  const credit = await page.textContent('#route-note');
+  check('the layers panel credits the Tourism Board',
+    /Singapore Tourism Board/.test(credit), credit.slice(0, 110));
+  // leave the drawer closed and the route open: the next section goes home
+  await page.click('#btn-layers');
+
   // ── re-uploading a known route reuses the saved copy ──
   const before = overpassCalls;
   await page.click('#btn-home');
