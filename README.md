@@ -102,6 +102,22 @@ viewpoint, and they stay spread along the route. The spacing and the clearance
 at each end are relative to the route's length: a flat 150 m dead zone is right
 for a 13 km event route and eats a quarter of a 1.2 km loop round a park.
 
+### Official Singapore sources
+
+OpenStreetMap is the backbone everywhere, and in Singapore two government
+registers fill gaps it cannot. Both ship with the app, are consulted only over
+the ground they describe, and are merged with the OpenStreetMap results rather
+than replacing them — de-duplicated at 40 m, with the official record winning
+because it carries the name on the sign.
+
+| Register | What it adds | Where |
+| --- | --- | --- |
+| **SCDF, Public Access AEDs** | 9,644 defibrillators with opening hours | Singapore |
+| **NParks, Central Nature Reserve Amenities** | 97 shelters and huts by name, 18 toilets, 18 car parks, towers and wartime remains | The central reserves and southern ridges |
+
+`.github/workflows/refresh-aed.yml` checks both daily and rebuilds only what
+has actually changed.
+
 ### Defibrillators in Singapore
 
 OpenStreetMap has almost no AEDs mapped in Singapore. On a 1.2 km loop in
@@ -327,7 +343,9 @@ js/geo.js             route indexing, projection, progress tracking, simplify
 js/elevation.js       terrain sampling where the file has no elevation
 js/net.js             fetch with a deadline on every request
 js/aed.js             SCDF's Singapore AED register: opening hours, merging
-data/aed-sg.json      that register, built by tools/fetch_aed.py
+js/nparks.js          NParks' reserve amenities and landmarks
+data/aed-sg.json      those registers, built by tools/fetch_*.py
+data/nparks-sg.json
 js/store.js           IndexedDB: routes, facilities, trails
 js/weather.js         NEA and Open-Meteo behind one model
 js/basemaps.js        the base map list and tile URL handling
@@ -370,6 +388,8 @@ python3 tools/rasterise.py           # writes the three PNGs
 - Facilities, landmarks and trails: © [OpenStreetMap](https://www.openstreetmap.org/copyright)
   contributors, ODbL, via the Overpass API.
 - Singapore AED locations: © Singapore Civil Defence Force, via
+  [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
+- Singapore park amenities: © National Parks Board, via
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Weather and air quality: [NEA](https://data.gov.sg/) via data.gov.sg in
   Singapore; [Open-Meteo](https://open-meteo.com/) elsewhere.

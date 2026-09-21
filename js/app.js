@@ -20,6 +20,7 @@ import { readRouteFile } from './routefile.js';
 import { fetchPlaces, fetchTrails, MAX_OFFSET_M } from './overpass.js';
 import { fillElevation } from './elevation.js';
 import { coversRoute, mergeAeds, openAt, sgAedsAlong, todayLabel } from './aed.js';
+import { nparksAlong, touchesReserves } from './nparks.js';
 import { buildCheckpoints } from './checkpoints.js';
 import {
   routeId, saveRoute, savePlaces, loadRoute, listRoutes, deleteRoute,
@@ -355,14 +356,15 @@ async function importFile(file) {
               ? 'the public mirrors often take half a minute' : null]
             .filter(Boolean).join(' · ')),
       });
-      const merged = await withSgAeds(doc, places.facilities, { signal: abort.signal });
+      const merged = await withOfficialSources(doc, places.facilities, places.landmarks,
+        { signal: abort.signal });
       record.facilities = merged.facilities;
-      record.landmarks = places.landmarks;
+      record.landmarks = merged.landmarks;
       record.placesFetchedAt = places.fetchedAt;
       const n = Object.values(merged.facilities).reduce((sum, list) => sum + list.length, 0);
       importStep('places', 'done',
-        `${n} facilities and ${places.landmarks.length} landmarks along the route`
-        + (merged.added ? ` · ${merged.added} AEDs from SCDF` : ''));
+        `${n} facilities and ${merged.landmarks.length} landmarks along the route`
+        + (merged.added.length ? ` · ${merged.added.join(', ')}` : ''));
     } catch (err) {
       if (abort.signal.aborted) throw err;
       console.warn('places', err);
@@ -467,40 +469,52 @@ async function openRoute(record) {
   startWeather();
 
   renderRouteAlert();
-  refreshSgAeds();
+  refreshOfficialSources();
 }
 
 /**
- * Bring a saved route's defibrillators up to date with the shipped register.
+ * Bring a saved route's official data up to date with what the app now ships.
  *
- * The AEDs are stored with the route so they survive with no signal, which also
- * means a route imported last year keeps last year's AEDs for ever. The
- * register is refreshed whenever SCDF publish, so every opening re-derives them
- * from the copy on the device and writes back only when something actually
- * moved. Silent by design: there is nothing for the walker to do about it, and
- * nothing here is worth a toast.
+ * The registers are stored with the route so it survives with no signal, which
+ * also means a route imported last year keeps last year's huts and
+ * defibrillators for ever. They are refreshed whenever SCDF or NParks publish,
+ * so every opening re-derives them from the copies on the device and writes
+ * back only when something actually moved. Silent by design: there is nothing
+ * for the walker to do about it.
  */
-async function refreshSgAeds() {
+async function refreshOfficialSources() {
   const id = state.id;
   const record = state.record;
   if (!record || !coversRoute(record.doc.bounds)) return;
   try {
-    const { aeds } = await sgAedsAlong(record.doc);
+    // Strip what came from a register and re-derive it; whatever OpenStreetMap
+    // found is left exactly as the search left it.
+    const fromOsm = {};
+    for (const [cat, list] of Object.entries(record.facilities || {})) {
+      fromOsm[cat] = list.filter(p => p.source !== 'scdf' && p.source !== 'nparks');
+    }
+    const osmLandmarks = (record.landmarks || []).filter(l => l.source !== 'nparks');
+    const merged = await withOfficialSources(record.doc, fromOsm, osmLandmarks);
     if (state.id !== id || !state.map) return;          // the walker moved on
-    const fromOsm = (record.facilities.aed || []).filter(a => a.source !== 'scdf');
-    const merged = mergeAeds(fromOsm, aeds);
-    const before = record.facilities.aed || [];
-    const same = merged.length === before.length
-      && merged.every((a, i) => a.id === before[i].id);
-    if (same) return;
-    await savePlaces(id, { facilities: { ...record.facilities, aed: merged } });
+
+    const ids = places => Object.entries(places).sort(([a], [b]) => a.localeCompare(b))
+      .map(([cat, list]) => `${cat}:${list.map(p => p.id).join(',')}`).join('|');
+    if (ids(merged.facilities) === ids(record.facilities || {})
+      && merged.landmarks.length === (record.landmarks || []).length) return;
+
+    const checkpoints = buildCheckpoints(record.doc, record.waypoints, merged.landmarks);
+    await savePlaces(id, {
+      facilities: merged.facilities,
+      landmarks: merged.landmarks,
+      checkpoints,
+    });
     if (state.id !== id || !state.map) return;
     const fresh = await loadRoute(id);
     if (state.id !== id || !state.map || !fresh) return;
     applyPlaces(fresh);
   } catch (err) {
-    // No register, no change: the route keeps the AEDs it was saved with.
-    console.warn('aed refresh', err);
+    // No register, no change: the route keeps what it was saved with.
+    console.warn('official sources', err);
   }
 }
 
@@ -1066,10 +1080,14 @@ function renderPoiNote() {
   const total = Object.values(state.pois).reduce((n, list) => n + list.length, 0);
   const radii = Object.values(MAX_OFFSET_M);
   const fromScdf = (state.pois.aed || []).filter(p => p.source === 'scdf').length;
+  const fromNParks = Object.values(state.pois)
+    .reduce((n, list) => n + list.filter(p => p.source === 'nparks').length, 0);
   $('#poi-note').textContent = total
     ? `Within ${Math.min(...radii)}–${Math.max(...radii)} m of the route, depending on the kind. `
       + 'Data © OpenStreetMap contributors'
-      + (fromScdf ? `; ${fromScdf} AEDs © Singapore Civil Defence Force via data.gov.sg.` : '.')
+      + (fromScdf ? `; ${fromScdf} AEDs © Singapore Civil Defence Force` : '')
+      + (fromNParks ? `; ${fromNParks} park amenities © National Parks Board` : '')
+      + (fromScdf || fromNParks ? ', via data.gov.sg.' : '.')
     // An empty list is worth a sentence: it is as likely to mean nobody has
     // mapped this valley as it is to mean there is no water on the route, and
     // a walker planning round it should know which claim the app is making.
@@ -1189,26 +1207,72 @@ function applyPlaces(record) {
 }
 
 /**
- * Add the official register's defibrillators to what OpenStreetMap found.
+ * How near two of the same kind of thing have to be to be the same thing.
  *
- * Only where it covers the route, and never fatally: an AED layer that fails to
- * load leaves the OpenStreetMap ones exactly as they were, which is what the
- * app had before the register existed.
+ * An official register and OpenStreetMap describe the same hut from different
+ * surveys, so their coordinates differ by a few tens of metres. Closer than
+ * this and it is one hut described twice; the official record wins, because it
+ * carries the name the sign on it uses.
  */
-async function withSgAeds(doc, facilities, { signal } = {}) {
-  if (!coversRoute(doc.bounds)) return { facilities, added: 0 };
-  try {
-    const { aeds } = await sgAedsAlong(doc, { signal });
-    if (!aeds.length) return { facilities, added: 0 };
-    return {
-      facilities: { ...facilities, aed: mergeAeds(facilities.aed || [], aeds) },
-      added: aeds.length,
-    };
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    console.warn('aed register', err);
-    return { facilities, added: 0 };
+const SAME_PLACE_M = 40;
+
+function mergeByProximity(official = [], osm = []) {
+  const kept = official.slice();
+  const R = 6371008.8, DEG = Math.PI / 180;
+  for (const a of osm) {
+    const duplicate = kept.some(b => {
+      const dLat = (b.lat - a.lat) * DEG;
+      const dLon = (b.lon - a.lon) * DEG * Math.cos((a.lat + b.lat) / 2 * DEG);
+      return Math.sqrt(dLat * dLat + dLon * dLon) * R < SAME_PLACE_M;
+    });
+    if (!duplicate) kept.push(a);
   }
+  return kept.sort((a, b) => a.along - b.along);
+}
+
+/**
+ * Fold the official Singapore registers into what OpenStreetMap found.
+ *
+ * Two of them, each consulted only over the ground it describes: SCDF's
+ * defibrillators nationally, and NParks' amenities across the reserves. Never
+ * fatally — a register that will not load leaves the OpenStreetMap results
+ * exactly as they were, which is what the app had before any of this existed.
+ */
+async function withOfficialSources(doc, facilities, landmarks, { signal } = {}) {
+  const out = { facilities: { ...facilities }, landmarks: landmarks.slice(), added: [] };
+
+  if (coversRoute(doc.bounds)) {
+    try {
+      const { aeds } = await sgAedsAlong(doc, { signal });
+      if (aeds.length) {
+        out.facilities.aed = mergeAeds(out.facilities.aed || [], aeds);
+        out.added.push(`${aeds.length} AEDs from SCDF`);
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      console.warn('aed register', err);
+    }
+
+    try {
+      if (await touchesReserves(doc.bounds, { signal })) {
+        const park = await nparksAlong(doc, { signal });
+        let n = 0;
+        for (const [cat, list] of Object.entries(park.facilities)) {
+          out.facilities[cat] = mergeByProximity(list, out.facilities[cat] || []);
+          n += list.length;
+        }
+        if (park.landmarks.length) {
+          out.landmarks = mergeByProximity(park.landmarks, out.landmarks);
+        }
+        n += park.landmarks.length;
+        if (n) out.added.push(`${n} from NParks`);
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      console.warn('nparks register', err);
+    }
+  }
+  return out;
 }
 
 /** Search OpenStreetMap again — coverage improves, and a failed import can retry. */
@@ -1232,11 +1296,11 @@ async function refreshPlaces() {
         renderRouteAlert(note);
       },
     });
-    const merged = await withSgAeds(state.record.doc, places.facilities);
-    const checkpoints = buildCheckpoints(state.record.doc, state.record.waypoints, places.landmarks);
+    const merged = await withOfficialSources(state.record.doc, places.facilities, places.landmarks);
+    const checkpoints = buildCheckpoints(state.record.doc, state.record.waypoints, merged.landmarks);
     await savePlaces(state.id, {
       facilities: merged.facilities,
-      landmarks: places.landmarks,
+      landmarks: merged.landmarks,
       checkpoints,
       placesFetchedAt: places.fetchedAt,
     });

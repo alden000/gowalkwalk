@@ -247,11 +247,20 @@ function check(name, ok, extra = '') {
     [...document.querySelectorAll('#overlays label')].map(l =>
       [l.querySelector('input').dataset.layer, Number(l.querySelector('.c').textContent)])));
   check('OpenStreetMap AEDs kept alongside the register', counts.aed >= 2, JSON.stringify(counts));
-  check('toilet found', counts.toilet === 1);
-  check('water found', counts.water === 1);
-  check('vending found', counts.vending === 1);
-  check('bus shelter excluded, picnic shelter kept', counts.shelter === 1);
-  check('car park found', counts.parking === 1);
+  // The route sits inside the NParks reserves, so the totals above include
+  // official amenities too. These assertions are about what the OpenStreetMap
+  // search itself produced, so they count only what came from it.
+  const osmOnly = await page.evaluate(async () => {
+    const m = await import('/js/store.js');
+    const rec = await m.loadRoute(m.lastRouteId());
+    return Object.fromEntries(Object.entries(rec.facilities).map(([cat, list]) =>
+      [cat, list.filter(p => !p.source || p.source === 'osm').length]));
+  });
+  check('toilet found by the search', osmOnly.toilet === 1, JSON.stringify(osmOnly));
+  check('water found by the search', osmOnly.water === 1);
+  check('vending found by the search', osmOnly.vending === 1);
+  check('bus shelter excluded, picnic shelter kept', osmOnly.shelter === 1);
+  check('car park found by the search', osmOnly.parking === 1);
 
   // a checkpoint OpenStreetMap has a photograph of shows it in its popup
   const photo = await page.evaluate(async () => {
@@ -285,7 +294,7 @@ function check(name, ok, extra = '') {
     JSON.stringify(reg.sample));
   // a route saved before the register was refreshed picks the new AEDs up on
   // its own, which is what makes a scheduled data update worth having
-  check('a saved route re-derives its AEDs when reopened', await page.evaluate(async () => {
+  check('a saved route re-derives its official data when reopened', await page.evaluate(async () => {
     const m = await import('/js/store.js');
     const id = m.lastRouteId();
     const rec = await m.loadRoute(id);
@@ -301,6 +310,22 @@ function check(name, ok, extra = '') {
     const after = await m.loadRoute(m.lastRouteId());
     return (after.facilities.aed || []).filter(a => a.source === 'scdf').length > 10;
   }));
+
+  const park = await page.evaluate(async () => {
+    const m = await import('/js/store.js');
+    const rec = await m.loadRoute(m.lastRouteId());
+    const all = Object.entries(rec.facilities).flatMap(([cat, list]) =>
+      list.filter(p => p.source === 'nparks').map(p => `${cat}:${p.name}`));
+    return { n: all.length, sample: all.slice(0, 4),
+      landmarks: (rec.landmarks || []).filter(l => l.source === 'nparks').map(l => l.name).slice(0, 4) };
+  });
+  check('NParks amenities are merged in for a route in the reserves',
+    park.n > 5, `${park.n}: ${park.sample.join(', ')}`);
+  check('NParks landmarks come through too',
+    park.landmarks.length > 0, park.landmarks.join(', '));
+  check('the layers panel credits NParks',
+    /National Parks Board/.test(await page.textContent('#poi-note')),
+    (await page.textContent('#poi-note')).slice(-90));
 
   check('the layers panel credits SCDF',
     /Singapore Civil Defence Force/.test(await page.textContent('#poi-note')),
@@ -588,9 +613,12 @@ function check(name, ok, extra = '') {
       const m = await import('/js/store.js');
       const rec = await m.loadRoute(m.lastRouteId());
       const last = rec.doc.points[rec.doc.points.length - 1];
-      return rec.checkpoints.length === 2
-        && rec.checkpoints[0].along === 0
-        && rec.checkpoints[1].lat === last[0];
+      const finish = rec.checkpoints[rec.checkpoints.length - 1];
+      // not a count: a skipped route inside the reserves still picks up the
+      // official landmarks, which is the point of shipping them
+      return rec.checkpoints[0].along === 0
+        && finish.id === 'finish'
+        && finish.lat === last[0] && finish.lon === last[1];
     }));
   hangingMirrors = [];
 
