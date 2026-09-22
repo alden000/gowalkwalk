@@ -1,8 +1,9 @@
 name: Refresh the official Singapore data
 
-# Three registers, published on data.gov.sg irregularly: SCDF's defibrillators
+# Four registers, published on data.gov.sg irregularly: SCDF's defibrillators
 # (roughly once a year, in practice), NParks' reserve amenities (which moved
-# five days before this was written) and STB's attractions. The check runs
+# five days before this was written) and reserve trails, and STB's
+# attractions. The check runs
 # daily anyway, because the cost of asking is a few hundred bytes of metadata
 # each and the cost of being a year stale is a walker sent to a defibrillator
 # that has moved.
@@ -46,6 +47,9 @@ jobs:
       - name: Rebuild the STB attraction register if it changed
         run: python3 tools/fetch_attractions.py --if-changed
 
+      - name: Rebuild the NParks trail geometry if it changed
+        run: python3 tools/fetch_trails.py --if-changed
+
       - name: Commit whatever changed
         run: |
           if git diff --quiet -- data/; then
@@ -57,10 +61,12 @@ jobs:
           aed = json.load(open('data/aed-sg.json'))
           park = json.load(open('data/nparks-sg.json'))
           stb = json.load(open('data/stb-sg.json'))
+          trails = json.load(open('data/trails-sg.json'))
           print(f"SCDF {aed['sourceUpdatedAt'][:10]}: {len(aed['aed']):,} AEDs. "
                 f"NParks {park['sourceUpdatedAt'][:10]}: {len(park['places'])} amenities, "
                 f"{len(park['landmarks'])} landmarks. "
-                f"STB {stb['sourceUpdatedAt'][:10]}: {len(stb['attractions'])} attractions.")
+                f"STB {stb['sourceUpdatedAt'][:10]}: {len(stb['attractions'])} attractions. "
+                f"NParks trails {trails['sourceUpdatedAt'][:10]}: {len(trails['ways'])} lines.")
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

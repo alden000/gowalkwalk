@@ -334,18 +334,63 @@ function check(name, ok, extra = '') {
   const cps = await page.evaluate(() => document.querySelectorAll('#bar-ticks i').length);
   check('landmarks became checkpoints', cps === 4, `${cps} intermediate checkpoints`);
 
-  // ── trails on demand ──
+  // ── trails: the official ones first, OpenStreetMap when asked ──
   // the AED re-derivation check above went home and back, which closes the
   // layers drawer the earlier checks had left open
   if (await page.isHidden('#layers')) await page.click('#btn-layers');
   await page.waitForSelector('#chk-trails');
+  const trailCallsBefore = overpassCalls;
   await page.check('#chk-trails');
   await page.waitForFunction(
-    () => ['1', 'failed'].includes(document.querySelector('#trails-c').textContent),
+    () => /official|paths|failed/.test(document.querySelector('#trails-c').textContent),
     null, { timeout: 20000 });
-  check('trails fetched on demand', (await page.textContent('#trails-c')) === '1');
-  check('trail polyline drawn',
-    await page.evaluate(() => document.querySelectorAll('.leaflet-overlay-pane path').length) > 8);
+  const drawn = (await page.textContent('#trails-c')).trim();
+  check('the reserve trails come from the bundled register',
+    /^\d+ official$/.test(drawn), drawn);
+  // the whole point: no three-minute wait at a fork in the forest
+  check('and cost no network at all',
+    overpassCalls === trailCallsBefore, `${overpassCalls - trailCallsBefore} queries`);
+  check('trail lines drawn',
+    await page.evaluate(() => document.querySelectorAll('.leaflet-overlay-pane path').length) > 40);
+
+  // a named trail answers a tap with its name, and with the number on the sign
+  const tapped = await page.evaluate(async () => {
+    const seen = [];
+    for (const path of document.querySelectorAll('.leaflet-overlay-pane path.leaflet-interactive')) {
+      path.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      await new Promise(r => setTimeout(r, 30));
+      const pop = document.querySelector('.leaflet-popup-content');
+      if (pop) seen.push(pop.textContent);
+      if (seen.length >= 25) break;
+    }
+    document.querySelector('.leaflet-popup-close-button')?.click();
+    return seen;
+  });
+  check('tapping a trail names it', tapped.some(t => /Venus Loop|TreeTop Walk|Squirrel Trail/.test(t)),
+    tapped.slice(0, 3).join(' | '));
+  check('and gives the route number the signposts use',
+    tapped.some(t => /MacRitchie Nature Trail Route \d/.test(t)),
+    tapped.find(t => /Route/.test(t)) || 'none');
+  // the register writes "MNT Route 6"; a signpost, and now the app, says the
+  // whole thing. Both halves asserted, so this cannot pass on an empty list.
+  check('the surveyor\u2019s shorthand is expanded for reading',
+    tapped.some(t => /MacRitchie Nature Trail/.test(t))
+    && !tapped.some(t => /\bMNT\b|\bBt\b|\bJln\b|\bResr\b|\bTTW\b/.test(t)),
+    tapped.filter(t => /\bMNT\b|\bBt\b|\bJln\b|\bResr\b|\bTTW\b/.test(t)).join(' | ') || 'none left');
+
+  // and OpenStreetMap is still there for everything NParks does not survey
+  check('the offer to add OpenStreetMap paths is made', await page.isVisible('#btn-osm-trails'));
+  const addCallsBefore = overpassCalls;
+  await page.click('#btn-osm-trails');
+  await page.waitForFunction(
+    () => /paths/.test(document.querySelector('#trails-c').textContent),
+    null, { timeout: 30000 });
+  check('adding OpenStreetMap paths searches for them',
+    overpassCalls > addCallsBefore, `${overpassCalls - addCallsBefore} queries`);
+  const both = (await page.textContent('#trails-c')).trim();
+  check('and the official trails are kept alongside them',
+    Number(both.split(' ')[0]) > Number(drawn.split(' ')[0]), `${drawn} → ${both}`);
+  check('the offer goes once it has been taken', await page.isHidden('#btn-osm-trails'));
 
   // ── SOS ──
   await page.click('#btn-layers');
@@ -442,6 +487,22 @@ function check(name, ok, extra = '') {
     [...document.querySelectorAll('#sos-calls a')].map(a => a.getAttribute('href')));
   check('international number outside a known region', alpineCalls.includes('tel:112'), alpineCalls.join(' '));
   await page.click('#sos-close');
+
+  // the bundled trails are Singapore's; abroad the search is still the answer
+  await page.click('#btn-layers');
+  await page.waitForSelector('#chk-trails');
+  const alpineTrailCalls = overpassCalls;
+  await page.check('#chk-trails');
+  await page.waitForFunction(
+    () => /paths|official|failed/.test(document.querySelector('#trails-c').textContent),
+    null, { timeout: 30000 });
+  const alpineTrails = (await page.textContent('#trails-c')).trim();
+  check('outside Singapore the trails still come from OpenStreetMap',
+    /^\d+ paths$/.test(alpineTrails) && overpassCalls > alpineTrailCalls,
+    `${alpineTrails}, ${overpassCalls - alpineTrailCalls} queries`);
+  check('and no offer to add what is already there',
+    await page.isHidden('#btn-osm-trails'));
+  await page.click('#btn-layers');
 
   // ── KML and KMZ ──
   await page.click('#btn-home');
@@ -549,6 +610,59 @@ function check(name, ok, extra = '') {
   await page.waitForSelector('#home-err:not([hidden])', { timeout: 15000 });
   check('a track-less GPX is refused clearly',
     /No track or route points/.test(await page.textContent('#home-err')));
+
+  // ── the corridor test must not freeze the phone on a long recording ──
+  // A day-long Singapore walk at one fix a second is 50,000 points, and the
+  // first version of this — projectOnto per trail vertex — took 2.8 seconds of
+  // dead screen for a checkbox. The grid must give the same answer, fast.
+  const corridor = await page.evaluate(async () => {
+    const geo = await import('/js/geo.js');
+    const { sgTrailsAlong } = await import('/js/trails-sg.js');
+    const make = n => {
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const t = i / n * 2 * Math.PI;
+        pts.push([1.33 + 0.06 * Math.sin(t), 103.79 + 0.04 * Math.cos(t), null]);
+      }
+      return geo.buildRouteDoc(pts, {});
+    };
+    const small = await sgTrailsAlong(make(500));
+    const doc = make(50000);
+    const t0 = performance.now();
+    const big = await sgTrailsAlong(doc);
+    return {
+      ms: Math.round(performance.now() - t0),
+      big: big.ways.length,
+      small: small.ways.length,
+      named: big.ways.filter(w => w.name).length,
+    };
+  });
+  check('a 50,000-point route resolves its trails without freezing',
+    corridor.big > 40 && corridor.ms < 600, `${corridor.big} lines in ${corridor.ms} ms`);
+  // The grid holds route *segments*, not route points, so how densely the walker
+  // recorded cannot change which trails the corridor contains.
+  check('and thinning the same route does not change which trails it passes',
+    corridor.small === corridor.big, `${corridor.small} at 500 pts, ${corridor.big} at 50,000`);
+
+  // The mirror image: a trail may be drawn as one long straight. The register's
+  // longest such gap is 725 m, and a route crossing the middle of it is 362 m
+  // from either end — outside the corridor — so testing only the vertices would
+  // miss a trail the route walks straight across.
+  const straight = await page.evaluate(async () => {
+    const geo = await import('/js/geo.js');
+    const { sgTrailsAlong } = await import('/js/trails-sg.js');
+    // 100 m of route across the middle of that gap
+    const doc = geo.buildRouteDoc([
+      [1.34442, 103.77598, null], [1.34487, 103.77598, null], [1.34532, 103.77598, null],
+    ], {});
+    const { ways } = await sgTrailsAlong(doc);
+    return {
+      n: ways.length,
+      crossed: ways.some(w => w.pts.some(([lat, lon]) => lat === 1.34744 && lon === 103.77398)),
+    };
+  });
+  check('a trail drawn as one long straight is found where the route crosses it',
+    straight.crossed, `${straight.n} lines, the long one ${straight.crossed ? 'found' : 'missed'}`);
 
   // ── an AED behind a locked door is not an AED ──
   const hoursLogic = await page.evaluate(async () => {

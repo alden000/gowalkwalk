@@ -22,6 +22,7 @@ import { fillElevation } from './elevation.js';
 import { coversRoute, mergeAeds, openAt, sgAedsAlong, todayLabel } from './aed.js';
 import { nparksAlong, touchesReserves } from './nparks.js';
 import { attractionsAlong, touchesAttractions } from './stb.js';
+import { coversTrails, sgTrailsAlong } from './trails-sg.js';
 import { buildCheckpoints } from './checkpoints.js';
 import {
   routeId, saveRoute, savePlaces, loadRoute, listRoutes, deleteRoute,
@@ -110,6 +111,7 @@ const state = {
   restored: false,
   saving: false,
   trailsLoading: false,
+  trailsSource: null,
   importAbort: null,
 };
 
@@ -547,7 +549,7 @@ function teardownRoute() {
     layers: {}, baseLayers: {}, basemaps: [], activeBase: null, marker: null,
     accuracyRing: null, doneLine: null, lastFix: null, lastProgress: null,
     lastAccuracy: null, following: false, restored: false, saving: false,
-    cluster: null, markersByCategory: null, trailsLoading: false,
+    cluster: null, markersByCategory: null, trailsLoading: false, trailsSource: null,
     searching: false, searchFailed: false,
   });
   closePanels();
@@ -960,6 +962,7 @@ function buildLayerUI() {
       <span class="n">Distance markers</span><span class="c">every ${state.kmSpacing / 1000} km</span></label>
     <label><input type="checkbox" id="chk-trails" data-layer="trails">
       <span class="n">Trails &amp; footpaths</span><span class="c" id="trails-c">on demand</span></label>
+    <button type="button" id="btn-osm-trails" class="btn subtle" hidden>Add OpenStreetMap paths</button>
     <label><input type="checkbox" id="chk-saver">
       <span class="n">Battery saver GPS</span><span class="c">fix every ${SAVER_POLL_MS / 1000} s</span></label>
     <label><input type="checkbox" id="chk-follow">
@@ -992,6 +995,9 @@ function buildLayerUI() {
   $('#btn-reset').addEventListener('click', () => {
     if (confirm('Reset progress and start tracking from the start again?')) resetProgress();
   });
+  // Also rewritten by this function, so it is a new element every time too.
+  $('#btn-osm-trails').addEventListener('click', () => searchTrails(null, { adding: true }));
+  renderTrailsOffer();
   wireOnce('layer-buttons', () => {
     $('#btn-save-map').addEventListener('click', () => {
       if (state.saving) {
@@ -1135,7 +1141,22 @@ function renderRouteNote() {
   ].filter(Boolean).join(' · ');
 }
 
-/** Fetch the footpath network the first time somebody asks to see it. */
+/**
+ * Show the paths around the route the first time somebody asks for them.
+ *
+ * Inside the nature reserves this is instant and needs no network: NParks'
+ * own trails ship with the app. That matters more than it sounds. The
+ * OpenStreetMap search this replaces there was measured at 172 seconds from
+ * the mirror that answered — and it is asked for by somebody standing at a
+ * fork in the forest on one bar of signal, which is the worst possible moment
+ * to start a three-minute wait.
+ *
+ * It is not a replacement. OpenStreetMap has three times the kilometres over
+ * the same ground, including every connector and pavement NParks does not
+ * survey, so the official trails are drawn first and *Add OpenStreetMap paths*
+ * fetches the rest on request. First the answer, then the offer — never a
+ * wait nobody asked for.
+ */
 async function enableTrails(box) {
   if (state.layers.trails.getLayers().length) {
     state.layers.trails.addTo(state.map);
@@ -1145,47 +1166,127 @@ async function enableTrails(box) {
 
   const cached = await loadTrails(state.id);
   if (cached?.ways?.length) {
-    drawTrails(cached.ways);
+    drawTrails(cached.ways, cached.source);
     return;
   }
 
+  const routeAtStart = state.id;
+  if (state.record?.doc && await coversTrails(state.record.doc.bounds).catch(() => false)) {
+    try {
+      const trails = await sgTrailsAlong(state.record.doc);
+      if (state.id !== routeAtStart) return;        // the walker moved on
+      if (trails.ways.length) {
+        await saveTrails(state.id, trails);
+        drawTrails(trails.ways, 'nparks');
+        toast(`${trails.ways.length} official trails drawn — no network needed`);
+        return;
+      }
+    } catch (err) {
+      console.warn('nparks trails', err);      // fall through to the search
+    }
+  }
+  await searchTrails(box);
+}
+
+/** The OpenStreetMap footpath search: everything NParks does not survey. */
+async function searchTrails(box, { adding = false } = {}) {
+  if (state.trailsLoading) return;
   state.trailsLoading = true;
-  $('#trails-c').textContent = 'loading…';
+  renderTrailsOffer();
+  if (!adding) $('#trails-c').textContent = 'loading…';
   try {
     const trails = await fetchTrails(state.record.doc, {
       onProgress: (done, total) => {
-        $('#trails-c').textContent = total > 1 ? `${done}/${total}` : 'loading…';
+        const where = total > 1 ? `${done}/${total}` : 'loading…';
+        // looked up each time: the layers panel may have been rewritten under
+        // us by a facility search finishing, and the old button is gone
+        if (adding) { const b = $('#btn-osm-trails'); if (b) b.textContent = `Asking OpenStreetMap… ${where}`; }
+        else $('#trails-c').textContent = where;
       },
     });
-    await saveTrails(state.id, trails);
-    drawTrails(trails.ways);
-    toast(`${trails.ways.length} paths drawn — kept for offline`);
+    const existing = adding ? (await loadTrails(state.id))?.ways || [] : [];
+    const ways = [...existing, ...trails.ways];
+    await saveTrails(state.id, {
+      ...trails,
+      ways,
+      source: existing.length ? 'both' : 'osm',
+      attribution: existing.length
+        ? `${trails.attribution}; trails © National Parks Board, data.gov.sg`
+        : trails.attribution,
+    });
+    drawTrails(ways, existing.length ? 'both' : 'osm');
+    toast(`${trails.ways.length}${adding ? ' more' : ''} paths drawn — kept for offline`);
   } catch (err) {
     console.warn('trails', err);
-    $('#trails-c').textContent = 'failed';
-    box.checked = false;
-    toast('Could not reach OpenStreetMap for the footpaths');
+    if (adding) {
+      toast('Could not reach OpenStreetMap — the official trails are still there');
+    } else {
+      $('#trails-c').textContent = 'failed';
+      box.checked = false;
+      toast('Could not reach OpenStreetMap for the footpaths');
+    }
   } finally {
     state.trailsLoading = false;
+    renderTrailsOffer();
   }
 }
 
-function drawTrails(ways) {
+/**
+ * Official first, crowd-sourced beneath.
+ *
+ * The two sources cover the same ground — 72% of NParks' vertices have an
+ * OpenStreetMap node within 15 m — so drawing them identically would say the
+ * map is twice as sure as it is. The surveyed trail keeps the full-strength
+ * line; everything else is dimmer and thinner underneath it. A line with a
+ * name answers a tap with that name, because the question at a junction is
+ * "which one is this?" and the signpost is not always there. An unnamed line
+ * has no answer to give, so it stays untappable and the tap reaches the map.
+ */
+function drawTrails(ways, source = 'osm') {
   const group = state.layers.trails;
   group.clearLayers();
-  for (const way of ways) {
-    L.polyline(way.pts, {
+  // official last, so it draws over the crowd-sourced lines rather than under
+  for (const way of [...ways].sort((a, b) => (a.source === 'nparks') - (b.source === 'nparks'))) {
+    const official = way.source === 'nparks';
+    const line = L.polyline(way.pts, {
       color: way.kind === 'steps' ? '#8d6e4a' : '#a4744a',
-      weight: 1.6,
-      opacity: 0.75,
+      weight: official ? 2 : 1.4,
+      opacity: official ? 0.85 : 0.55,
       dashArray: way.kind === 'steps' ? '3 3' : null,
-      interactive: false,
-    }).addTo(group);
+      interactive: !!way.name,
+    });
+    if (way.name) {
+      line.bindPopup(
+        `<div class="pop-t">${escapeHtml(way.name)}</div>`
+        + (way.route ? `<div class="pop-d">${escapeHtml(way.route)}</div>` : '')
+        + `<div class="pop-m">${official ? 'National Parks Board' : 'OpenStreetMap'}</div>`,
+        { maxWidth: 240 });
+    }
+    line.addTo(group);
   }
   group.addTo(state.map);
-  $('#trails-c').textContent = String(ways.length);
+  $('#trails-c').textContent = source === 'nparks'
+    ? `${ways.length} official` : `${ways.length} paths`;
   const box = $('#chk-trails');
   if (box) box.checked = true;
+  state.trailsSource = source;
+  renderTrailsOffer();
+}
+
+/**
+ * The offer to fetch the rest, shown only when there is a rest to fetch.
+ *
+ * Kept in a function of its own because the layers panel is rewritten from
+ * scratch whenever the facilities change, and an offer that disappears when
+ * something unrelated is re-searched is an offer the walker cannot rely on.
+ */
+function renderTrailsOffer() {
+  const btn = $('#btn-osm-trails');
+  if (!btn) return;
+  btn.hidden = state.trailsSource !== 'nparks';
+  btn.disabled = state.trailsLoading;
+  btn.textContent = state.trailsLoading
+    ? 'Asking OpenStreetMap…' : 'Add OpenStreetMap paths';
 }
 
 /**

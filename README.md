@@ -109,8 +109,8 @@ for a 13 km event route and eats a quarter of a 1.2 km loop round a park.
 
 ### Official Singapore sources
 
-OpenStreetMap is the backbone everywhere, and in Singapore three government
-registers fill gaps it cannot. All three ship with the app, are consulted only
+OpenStreetMap is the backbone everywhere, and in Singapore four government
+registers fill gaps it cannot. All four ship with the app, are consulted only
 over the ground they describe, and are merged with the OpenStreetMap results
 rather than replacing them — de-duplicated at 40 m, with the official record
 winning because it carries the name on the sign.
@@ -120,8 +120,9 @@ winning because it carries the name on the sign.
 | **SCDF, Public Access AEDs** | 9,644 defibrillators with opening hours | Singapore |
 | **NParks, Central Nature Reserve Amenities** | 97 shelters and huts by name, 18 toilets, 18 car parks, towers and wartime remains | The central reserves and southern ridges |
 | **STB, Tourist Attractions** | 106 attractions, each with a sentence saying what it is | The city and the parks |
+| **NParks, Central Nature Reserve Hiking Trails** | 170 km of trail with no network round trip, and the route numbers on the signposts | The central reserves and southern ridges |
 
-`.github/workflows/refresh-aed.yml` checks all three daily and rebuilds only
+`.github/workflows/refresh-aed.yml` checks all four daily and rebuilds only
 what has actually changed.
 
 ### Defibrillators in Singapore
@@ -194,6 +195,48 @@ hours (free-form prose, last edited in 2015 — stale hours are worse than none)
 The surrounding footpath network is a separate, much heavier search — a city
 route crosses thousands of pavements — so it is fetched only when you turn the
 overlay on, and then kept for offline.
+
+**Inside Singapore's nature reserves it is not searched at all.** NParks
+publishes its own map of the trails, and 170 km of it ships with the app, so
+the overlay draws instantly and with the radio off.
+
+That is not because OpenStreetMap is thin here. Measured over the same box
+across the Central Catchment, on the day this was written:
+
+| | Ways | Length | Distinct names |
+| --- | --- | --- | --- |
+| OpenStreetMap | 1,746 | 263.2 km | 49 |
+| NParks | 119 | 82.0 km | 51 |
+
+and 72% of NParks' vertices already have an OpenStreetMap node within 15 m. The
+crowd has done this ground properly, and swapping one for the other would throw
+away a hundred and eighty kilometres of real path. The register is shipped for
+two other things.
+
+**It answers immediately.** The probe that produced the table above also
+measured what the overlay costs today: 172 seconds from the mirror that
+answered, and a 504 after 197 seconds from one that did not. That is the
+slowest thing the app does, and it is asked for by somebody already in the
+forest, on one bar, standing at a fork. So the official trails are drawn first
+and **Add OpenStreetMap paths** fetches the rest when you ask for it — first the
+answer, then the offer, never a wait nobody asked for. The two are drawn at
+different weights, because 72% overlap means drawing them identically would
+claim the map is twice as sure as it is.
+
+**It carries the numbers on the signs.** MacRitchie is walked by route number —
+the boards say "Route 3" — and OpenStreetMap has none of the six. Tapping a
+named trail gives you its name, its route number and which of the two sources
+drew it. Unnamed lines stay untappable, so the tap reaches the map.
+
+The register writes a surveyor's shorthand — "Bt Peirce Track", "LP Resr Pk
+Track", "MNT Route 6" — which is not what a signpost says, so it is expanded
+from a table written against all 87 real names. `TRAIL_TYPE` is undocumented
+and is deliberately left undecoded; what *is* read off the data is that a group
+containing a segment named "MNT Route 6" lends that route to the rest of the
+group.
+
+    python3 tools/fetch_trails.py               # rebuild now
+    python3 tools/fetch_trails.py --if-changed  # only if NParks have published
 
 ---
 
@@ -385,9 +428,11 @@ js/net.js             fetch with a deadline on every request
 js/aed.js             SCDF's Singapore AED register: opening hours, merging
 js/nparks.js          NParks' reserve amenities and landmarks
 js/stb.js             STB's attractions, as described landmarks
+js/trails-sg.js       NParks' reserve trails and the corridor grid
 data/aed-sg.json      those registers, built by tools/fetch_*.py
 data/nparks-sg.json
 data/stb-sg.json
+data/trails-sg.json
 js/store.js           IndexedDB: routes, facilities, trails
 js/weather.js         NEA and Open-Meteo behind one model
 js/basemaps.js        the base map list and tile URL handling
@@ -432,6 +477,8 @@ python3 tools/rasterise.py           # writes the three PNGs
 - Singapore AED locations: © Singapore Civil Defence Force, via
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Singapore park amenities: © National Parks Board, via
+  [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
+- Singapore reserve trails: © National Parks Board, via
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Singapore attractions: © Singapore Tourism Board, via
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence;
