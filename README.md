@@ -109,8 +109,8 @@ for a 13 km event route and eats a quarter of a 1.2 km loop round a park.
 
 ### Official Singapore sources
 
-OpenStreetMap is the backbone everywhere, and in Singapore four government
-registers fill gaps it cannot. All four ship with the app, are consulted only
+OpenStreetMap is the backbone everywhere, and in Singapore five government
+registers fill gaps it cannot. All five ship with the app, are consulted only
 over the ground they describe, and are merged with the OpenStreetMap results
 rather than replacing them — de-duplicated at 40 m, with the official record
 winning because it carries the name on the sign.
@@ -121,8 +121,9 @@ winning because it carries the name on the sign.
 | **NParks, Central Nature Reserve Amenities** | 97 shelters and huts by name, 18 toilets, 18 car parks, towers and wartime remains | The central reserves and southern ridges |
 | **STB, Tourist Attractions** | 106 attractions, each with a sentence saying what it is | The city and the parks |
 | **NParks, Central Nature Reserve Hiking Trails** | 170 km of trail with no network round trip, and the route numbers on the signposts | The central reserves and southern ridges |
+| **HDB, Carpark Information** | 2,272 car parks by name and kind, plus live occupancy on request | Singapore |
 
-`.github/workflows/refresh-aed.yml` checks all four daily and rebuilds only
+`.github/workflows/refresh-aed.yml` checks all five daily and rebuilds only
 what has actually changed.
 
 ### Defibrillators in Singapore
@@ -190,6 +191,44 @@ hours (free-form prose, last edited in 2015 — stale hours are worse than none)
     python3 tools/fetch_attractions.py               # rebuild now
     python3 tools/fetch_attractions.py --if-changed  # only if STB have published
 
+### Car parks, and how full they are
+
+HDB publishes *where* its 2,272 car parks are once a month, and *how full they
+are* once a minute. The two halves are used differently on purpose.
+
+The positions ship with the app. The occupancy is a 300 KB feed covering the
+whole country with no way to ask about one car park, so it is never fetched on
+the walker's behalf — the layers panel offers **Check availability at N HDB car
+parks**, and once taken the button stops being an invitation and becomes the
+timestamp. Every number it produces says how old it is, and past fifteen
+minutes it says it is probably stale, because a count with no timestamp is a
+promise the app cannot keep. A full car park is spelled out — *Full — 0 of 212
+lots* — rather than shown as a zero, and motorcycle and heavy-vehicle lots are
+not counted as car lots.
+
+Two things needed care.
+
+**The coordinates are in SVY21**, Singapore's own grid, in metres from a point
+near Bukit Timah. OneMap's converter needs an API token, so the transverse
+Mercator inverse is done in `tools/fetch_carparks.py` and then checked against
+the authority: OneMap's public search returns *both* X/Y and latitude/longitude
+for the same point, which is exact paired ground truth. Of 106 such pairs from
+Tuas to Changi, 93 agree to under a centimetre and the worst is 1.8 m — a
+OneMap record whose own two coordinates disagree. `--verify` reproduces that,
+and CI runs it on every data refresh.
+
+**The register is exhaustive where OpenStreetMap is selective.** A 1.2 km loop
+through a housing estate passes fifty-four HDB car parks inside the usual
+kilometre, which buries the defibrillators under a drift of parking pins. So
+anything within 250 m of one already kept is dropped — two car parks 250 m
+apart are a three-minute walk apart and a real choice; closer than that and the
+walker is picking between decks of the same estate. That loop keeps twenty, and
+the import card says how many were dropped.
+
+    python3 tools/fetch_carparks.py               # rebuild now
+    python3 tools/fetch_carparks.py --if-changed  # only if HDB have published
+    python3 tools/fetch_carparks.py --verify      # check the projection only
+
 ### Trails
 
 The surrounding footpath network is a separate, much heavier search — a city
@@ -219,7 +258,9 @@ answered, and a 504 after 197 seconds from one that did not. That is the
 slowest thing the app does, and it is asked for by somebody already in the
 forest, on one bar, standing at a fork. So the official trails are drawn first
 and **Add OpenStreetMap paths** fetches the rest when you ask for it — first the
-answer, then the offer, never a wait nobody asked for. The two are drawn at
+answer, then the offer, never a wait nobody asked for. That wait can run to
+minutes on a public mirror, so the button becomes *tap to stop* while it works
+and stopping leaves the official trails exactly where they were. The two are drawn at
 different weights, because 72% overlap means drawing them identically would
 claim the map is twice as sure as it is.
 
@@ -429,10 +470,12 @@ js/aed.js             SCDF's Singapore AED register: opening hours, merging
 js/nparks.js          NParks' reserve amenities and landmarks
 js/stb.js             STB's attractions, as described landmarks
 js/trails-sg.js       NParks' reserve trails and the corridor grid
+js/carparks.js        HDB's car parks and their live occupancy
 data/aed-sg.json      those registers, built by tools/fetch_*.py
 data/nparks-sg.json
 data/stb-sg.json
 data/trails-sg.json
+data/carparks-sg.json
 js/store.js           IndexedDB: routes, facilities, trails
 js/weather.js         NEA and Open-Meteo behind one model
 js/basemaps.js        the base map list and tile URL handling
@@ -478,6 +521,8 @@ python3 tools/rasterise.py           # writes the three PNGs
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Singapore park amenities: © National Parks Board, via
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
+- Singapore car parks and their live occupancy: © Housing & Development Board,
+  via [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Singapore reserve trails: © National Parks Board, via
   [data.gov.sg](https://data.gov.sg/), under the Singapore Open Data Licence.
 - Singapore attractions: © Singapore Tourism Board, via

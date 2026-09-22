@@ -99,6 +99,15 @@ function trailsPayload(lat, lon) {
 }
 
 const NEA_OK = { code: 0, data: {} };
+// The seven HDB car parks the Civic District lap keeps after thinning, with
+// one of them full, so both readings the popup can give are exercised.
+const CARPARK_LOTS = {
+  BBB: [0, 212], HLM: [261, 583], WCB: [44, 130], UCS: [7, 41],
+  KAML: [18, 60], CY: [95, 140], JKS: [31, 105],
+};
+let carparkCalls = 0;
+let carparkFails = false;
+let carparkHangs = false;
 let overpassCalls = 0;
 let hungCalls = 0;
 let hangingMirrors = [];
@@ -155,6 +164,27 @@ async function stub(context, { lat, lon }) {
       const n = (new URL(url).searchParams.get('latitude') || '').split(',').length;
       return route.fulfill({ status: 200, contentType: 'application/json',
         body: JSON.stringify({ elevation: Array.from({ length: n }, (_, i) => 400 + i * 3) }) });
+    }
+    if (url.includes('carpark-availability')) {
+      carparkCalls++;
+      // a feed that accepts the request and never answers: the wait the Stop
+      // has to get the walker out of
+      if (carparkHangs) return new Promise(() => {});
+      if (carparkFails) return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        items: [{
+          timestamp: new Date().toISOString(),
+          carpark_data: Object.entries(CARPARK_LOTS).map(([no, [free, total]]) => ({
+            carpark_number: no,
+            update_datetime: new Date().toISOString(),
+            carpark_info: [
+              { lot_type: 'C', lots_available: String(free), total_lots: String(total) },
+              // motorcycle lots, which must not be counted as car lots
+              { lot_type: 'Y', lots_available: '99', total_lots: '99' },
+            ],
+          })),
+        }],
+      }) });
     }
     if (url.includes('api.open-meteo.com')) {
       weatherProvider = 'open-meteo';
@@ -577,6 +607,106 @@ function check(name, ok, extra = '') {
   const credit = await page.textContent('#route-note');
   check('the layers panel credits the Tourism Board',
     /Singapore Tourism Board/.test(credit), credit.slice(0, 110));
+  // ── HDB car parks, and their occupancy on request ──
+  const parks = await page.evaluate(async () => {
+    const m = await import('/js/store.js');
+    const rec = await m.loadRoute(m.lastRouteId());
+    const hdb = (rec.facilities.parking || []).filter(p => p.source === 'hdb');
+    return { n: hdb.length, names: hdb.map(p => p.name),
+      numbered: hdb.filter(p => p.no).length,
+      detailed: hdb.filter(p => /Surface|Multi-storey|Basement|Covered/.test(p.detail)).length };
+  });
+  check('HDB car parks are merged in for a route through town',
+    parks.n >= 5, `${parks.n}: ${parks.names.slice(0, 3).join(', ')}`);
+  check('each carries the number the live feed is keyed by',
+    parks.n >= 5 && parks.numbered === parks.n, `${parks.numbered} of ${parks.n}`);
+  check('and says what kind of car park it is',
+    parks.n >= 5 && parks.detailed === parks.n, `${parks.detailed} of ${parks.n}`);
+  check('the layers panel credits HDB',
+    /Housing & Development Board/.test(await page.textContent('#poi-note')),
+    (await page.textContent('#poi-note')).slice(-80));
+
+  // the occupancy is never fetched unasked: 300 KB for the whole country
+  check('the occupancy is offered, not taken', carparkCalls === 0
+    && await page.isVisible('#btn-carpark-live'),
+    `${carparkCalls} calls, button says "${await page.textContent('#btn-carpark-live')}"`);
+  // a wait nobody can get out of is a wait nobody should be asked to start
+  carparkHangs = true;
+  await page.click('#btn-carpark-live');
+  await page.waitForFunction(
+    () => /tap to stop/.test(document.querySelector('#btn-carpark-live').textContent),
+    null, { timeout: 10000 });
+  check('a wait says how to stop it', true, await page.textContent('#btn-carpark-live'));
+  await page.click('#btn-carpark-live');
+  await page.waitForFunction(
+    () => /Check availability/.test(document.querySelector('#btn-carpark-live').textContent),
+    null, { timeout: 10000 });
+  check('and stopping gets you back to the offer',
+    /Check availability at 7/.test(await page.textContent('#btn-carpark-live'))
+    && !/lots/.test(await page.evaluate(() =>
+      document.querySelector('.leaflet-popup-content')?.textContent || '')),
+    await page.textContent('#btn-carpark-live'));
+
+  carparkHangs = false;
+  await page.click('#btn-carpark-live');
+  await page.waitForFunction(
+    () => /counted at/.test(document.querySelector('#btn-carpark-live').textContent),
+    null, { timeout: 20000 });
+  check('asking fetches the feed once', carparkCalls === 2,
+    `${carparkCalls} calls, one of them stopped`);
+  check('and the button becomes the timestamp',
+    /Lots counted at \d\d:\d\d/.test(await page.textContent('#btn-carpark-live')),
+    await page.textContent('#btn-carpark-live'));
+
+  // A tap on a cluster lists what is inside it. That list threw for every
+  // cluster until the popups stopped being parsed back out of their own HTML,
+  // so it is checked here while the map is still full of them.
+  const clusterRows = await page.evaluate(async () => {
+    const cluster = document.querySelector('.leaflet-marker-icon.cluster');
+    if (!cluster) return { rows: 0, sample: 'no cluster on screen' };
+    cluster.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    await new Promise(r => setTimeout(r, 200));
+    const rows = [...document.querySelectorAll('.cl-list button')];
+    const sample = rows[0]?.textContent.trim().replace(/\s+/g, ' ') || '';
+    document.querySelector('.leaflet-popup-close-button')?.click();
+    return { rows: rows.length, sample };
+  });
+  check('tapping a cluster lists what is inside it',
+    clusterRows.rows > 1, `${clusterRows.rows} rows — ${clusterRows.sample}`);
+
+  // Now look at the car parks themselves. The corridor reaches a kilometre
+  // from the path, well outside the view fitted to a 2.2 km loop, so pull back
+  // and turn the other markers off — what somebody hunting for a space does.
+  for (const cat of ['aed', 'toilet', 'water', 'vending', 'shelter']) {
+    const box = page.locator(`[data-layer="${cat}"]`);
+    if (await box.isEnabled()) await box.uncheck();
+  }
+  for (let i = 0; i < 3; i++) await page.click('#btn-zoom-out');
+  await page.waitForTimeout(900);
+  const lots = await page.evaluate(async names => {
+    const seen = [];
+    const icons = [...document.querySelectorAll('.leaflet-marker-icon')];
+    for (const icon of icons) {
+      icon.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      await new Promise(r => setTimeout(r, 80));
+      const pop = document.querySelector('.leaflet-popup-content');
+      const text = pop?.textContent || '';
+      if (/lots/.test(text) || names.some(n => text.includes(n))) seen.push(text);
+      document.querySelector('.leaflet-popup-close-button')?.click();
+      if (seen.length >= 7) break;
+    }
+    return { seen, icons: icons.length };
+  }, parks.names);
+  check('a car park marker shows how many lots are free',
+    lots.seen.some(t => /\d+ of \d+ lots free · just now/.test(t)),
+    lots.seen[0] || `${lots.icons} markers, none with lots`);
+  check('a full car park says so in words rather than showing a zero',
+    lots.seen.some(t => /Full — 0 of 212 lots/.test(t)),
+    lots.seen.find(t => /Full/.test(t)) || 'none');
+  check('motorcycle lots are not counted as car lots',
+    lots.seen.length > 0 && !lots.seen.some(t => /of 99 lots/.test(t)),
+    lots.seen.find(t => /99/.test(t)) || 'none counted');
+
   // leave the drawer closed and the route open: the next section goes home
   await page.click('#btn-layers');
 
@@ -663,6 +793,64 @@ function check(name, ok, extra = '') {
   });
   check('a trail drawn as one long straight is found where the route crosses it',
     straight.crossed, `${straight.n} lines, the long one ${straight.crossed ? 'found' : 'missed'}`);
+
+  // ── an exhaustive register must not bury the map in its own pins ──
+  // A route through a dense housing estate passes fifty-four HDB car parks
+  // inside the usual kilometre. Showing all of them buries the defibrillators,
+  // so anything within 250 m of one already kept is dropped — the walker is
+  // choosing between decks of the same estate, not between places to park.
+  const crowding = await page.evaluate(async () => {
+    const geo = await import('/js/geo.js');
+    const { hdbCarparksAlong } = await import('/js/carparks.js');
+    // the owner's own Woodlands loop: 1.2 km, and HDB car parks on every side
+    const pts = [];
+    for (let i = 0; i <= 120; i++) {
+      const t = i / 120 * 2 * Math.PI;
+      pts.push([1.43756 + 0.0016 * Math.sin(t), 103.80472 + 0.002 * Math.cos(t), null]);
+    }
+    const { carparks, crowded } = await hdbCarparksAlong(geo.buildRouteDoc(pts, {}));
+    const R = 6371008.8, DEG = Math.PI / 180;
+    let closest = Infinity;
+    for (let i = 0; i < carparks.length; i++) {
+      for (let j = i + 1; j < carparks.length; j++) {
+        const a = carparks[i], b = carparks[j];
+        const dLat = (b.lat - a.lat) * DEG;
+        const dLon = (b.lon - a.lon) * DEG * Math.cos((a.lat + b.lat) / 2 * DEG);
+        closest = Math.min(closest, Math.sqrt(dLat * dLat + dLon * dLon) * R);
+      }
+    }
+    return { kept: carparks.length, crowded, closest: Math.round(closest),
+      ordered: carparks.every((c, i) => i === 0 || c.along >= carparks[i - 1].along) };
+  });
+  check('a dense estate is thinned rather than shown whole',
+    crowding.crowded > 20 && crowding.kept < 25,
+    `${crowding.kept} kept, ${crowding.crowded} dropped as too close`);
+  check('and no two that survive are within 250 m of each other',
+    crowding.closest >= 250, `closest pair ${crowding.closest} m`);
+  check('car parks come back in the order the route meets them', crowding.ordered);
+
+  // a live count with no timestamp is a promise the app cannot keep
+  const wording = await page.evaluate(async () => {
+    const { lotsLine } = await import('/js/carparks.js');
+    const now = Date.parse('2026-09-22T10:00:00Z');
+    return {
+      fresh: lotsLine({ free: 42, total: 100, at: now - 30000 }, now),
+      recent: lotsLine({ free: 42, total: 100, at: now - 8 * 60000 }, now),
+      stale: lotsLine({ free: 42, total: 100, at: now - 40 * 60000 }, now),
+      full: lotsLine({ free: 0, total: 100, at: now }, now),
+      none: lotsLine(null, now),
+    };
+  });
+  check('a fresh count says so', wording.fresh.text === '42 of 100 lots free · just now',
+    wording.fresh.text);
+  check('a few minutes old says how many', wording.recent.text.endsWith('8 min ago'),
+    wording.recent.text);
+  check('an old count admits it is probably stale',
+    wording.stale.stale && /probably stale/.test(wording.stale.text), wording.stale.text);
+  check('full is a finding, not a zero',
+    wording.full.text.startsWith('Full — 0 of 100 lots') && wording.full.open === false,
+    wording.full.text);
+  check('no reading at all shows nothing rather than a guess', wording.none === null);
 
   // ── an AED behind a locked door is not an AED ──
   const hoursLogic = await page.evaluate(async () => {

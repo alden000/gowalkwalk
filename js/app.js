@@ -23,6 +23,7 @@ import { coversRoute, mergeAeds, openAt, sgAedsAlong, todayLabel } from './aed.j
 import { nparksAlong, touchesReserves } from './nparks.js';
 import { attractionsAlong, touchesAttractions } from './stb.js';
 import { coversTrails, sgTrailsAlong } from './trails-sg.js';
+import { coversCarparks, hdbCarparksAlong, liveAvailability, lotsLine } from './carparks.js';
 import { buildCheckpoints } from './checkpoints.js';
 import {
   routeId, saveRoute, savePlaces, loadRoute, listRoutes, deleteRoute,
@@ -112,6 +113,10 @@ const state = {
   saving: false,
   trailsLoading: false,
   trailsSource: null,
+  carparkLive: null,
+  carparkLoading: false,
+  carparkAbort: null,
+  trailsAbort: null,
   importAbort: null,
 };
 
@@ -494,7 +499,8 @@ async function refreshOfficialSources() {
     // found is left exactly as the search left it.
     const fromOsm = {};
     for (const [cat, list] of Object.entries(record.facilities || {})) {
-      fromOsm[cat] = list.filter(p => p.source !== 'scdf' && p.source !== 'nparks');
+      fromOsm[cat] = list.filter(p =>
+        p.source !== 'scdf' && p.source !== 'nparks' && p.source !== 'hdb');
     }
     const osmLandmarks = (record.landmarks || [])
       .filter(l => l.source !== 'nparks' && l.source !== 'stb');
@@ -550,6 +556,7 @@ function teardownRoute() {
     accuracyRing: null, doneLine: null, lastFix: null, lastProgress: null,
     lastAccuracy: null, following: false, restored: false, saving: false,
     cluster: null, markersByCategory: null, trailsLoading: false, trailsSource: null,
+    carparkLive: null, carparkLoading: false, carparkAbort: null, trailsAbort: null,
     searching: false, searchFailed: false,
   });
   closePanels();
@@ -870,9 +877,18 @@ function buildPois() {
       L.marker([p.lat, p.lon], {
         icon: poiIcon(cat),
         category: cat,
+        // Kept on the marker for the cluster list below. It used to read them
+        // back out of the popup's HTML with a regular expression, which stopped
+        // working the day the popups became functions — getContent() hands back
+        // the function, and the cluster list threw instead of opening.
+        title: p.name === meta.label ? meta.label : p.name,
+        detail: p.detail || '',
         zIndexOffset: cat === 'aed' ? 500 : 0,
       }).bindPopup(() => {
-        const hours = cat === 'aed' ? aedHours(p) : { text: '', open: null };
+        const hours = cat === 'aed' ? aedHours(p)
+          : lotsLine(state.carparkLive?.lots.get(p.no)
+            && { ...state.carparkLive.lots.get(p.no), at: state.carparkLive.at })
+            || { text: '', open: null };
         return photoHtml(p.photo)
           + `<div class="pop-t">${escapeHtml(p.name === meta.label ? meta.label : p.name)}</div>`
           + (p.detail ? `<div class="pop-d">${escapeHtml(p.detail)}</div>` : '')
@@ -883,7 +899,8 @@ function buildPois() {
             ? `<div class="pop-h" data-open="${hours.open}">${escapeHtml(hours.text)}</div>` : '')
           + (p.note ? `<div class="pop-n">${escapeHtml(p.note)}</div>` : '')
           + `<div class="pop-m">km ${(p.along / 1000).toFixed(2)} on route · ${p.offset} m off the path`
-          + (p.source === 'scdf' ? ' · SCDF' : '') + '</div>';
+          + (p.source === 'scdf' ? ' · SCDF' : '')
+          + (p.source === 'hdb' ? ' · HDB' : '') + '</div>';
       }, { maxWidth: (p.note || p.photo) ? 280 : 300 }));
 
     state.markersByCategory[cat] = markers;
@@ -898,11 +915,11 @@ function buildPois() {
       .sort((a, b) => a.options.category.localeCompare(b.options.category));
     const rows = children.map((m, i) => {
       const cat = m.options.category;
-      const title = m.getPopup().getContent().match(/class="pop-t">([^<]*)</)?.[1] || CATEGORY[cat].label;
-      const detail = m.getPopup().getContent().match(/class="pop-d">([^<]*)</)?.[1] || '';
+      const title = m.options.title || CATEGORY[cat].label;
+      const detail = m.options.detail || '';
       return `<li><button type="button" data-i="${i}">
         ${legendIcon(cat)}
-        <span><b>${title}</b>${detail ? `<em>${detail}</em>` : ''}</span>
+        <span><b>${escapeHtml(title)}</b>${detail ? `<em>${escapeHtml(detail)}</em>` : ''}</span>
       </button></li>`;
     }).join('');
 
@@ -954,6 +971,7 @@ function buildLayerUI() {
     </label>`;
   }).join('');
   renderPoiNote();
+  renderCarparkLive();
 
   $('#route-overlays').innerHTML = `
     <label><input type="checkbox" data-layer="checkpoints" checked>
@@ -998,6 +1016,9 @@ function buildLayerUI() {
   // Also rewritten by this function, so it is a new element every time too.
   $('#btn-osm-trails').addEventListener('click', () => searchTrails(null, { adding: true }));
   renderTrailsOffer();
+  wireOnce('carpark-live', () => {
+    $('#btn-carpark-live').addEventListener('click', refreshCarparkLive);
+  });
   wireOnce('layer-buttons', () => {
     $('#btn-save-map').addEventListener('click', () => {
       if (state.saving) {
@@ -1100,18 +1121,85 @@ function renderRouteAlert(extra) {
   state.measurePanels?.();
 }
 
+/**
+ * The live occupancy offer, and what it last said.
+ *
+ * Offered rather than taken: the feed is 300 KB for the whole country and
+ * cannot be asked about one car park, so spending that on a rationed data plan
+ * is the walker's call. Once taken, the button stops being an invitation and
+ * becomes the timestamp — because the number in the popups is only as good as
+ * the moment it was read, and that moment has to be visible somewhere that is
+ * not behind a tap.
+ */
+function renderCarparkLive() {
+  const btn = $('#btn-carpark-live');
+  if (!btn) return;
+  const hdb = (state.pois.parking || []).filter(p => p.source === 'hdb').length;
+  btn.hidden = !hdb;
+  // never disabled: while it is working the button is how you stop it
+  btn.disabled = false;
+  if (state.carparkLoading) {
+    btn.textContent = 'Asking HDB… tap to stop';
+  } else if (state.carparkLive) {
+    const when = new Date(state.carparkLive.at)
+      .toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    btn.textContent = `Lots counted at ${when} · check again`;
+  } else {
+    btn.textContent = `Check availability at ${hdb} HDB car park${hdb === 1 ? '' : 's'}`;
+  }
+}
+
+/** Ask the live feed how full they are, and put the answer in the popups. */
+async function refreshCarparkLive() {
+  // A second tap while it is working is a change of mind, not a second request.
+  if (state.carparkLoading) {
+    state.carparkAbort?.abort(new DOMException('Cancelled', 'AbortError'));
+    return;
+  }
+  const routeAtStart = state.id;
+  const abort = new AbortController();
+  state.carparkAbort = abort;
+  state.carparkLoading = true;
+  renderCarparkLive();
+  try {
+    const live = await liveAvailability({ signal: abort.signal });
+    if (state.id !== routeAtStart) return;          // the walker moved on
+    state.carparkLive = live;
+    const known = (state.pois.parking || []).filter(p => live.lots.has(p.no)).length;
+    // The popups build themselves when opened, so they will pick the numbers up
+    // on their own; an open one is refreshed by hand.
+    state.map?.closePopup();
+    toast(known
+      ? `Lots counted at ${known} of the HDB car parks on this route`
+      : 'HDB is not reporting lots for the car parks on this route');
+  } catch (err) {
+    if (abort.signal.aborted) {
+      toast('Stopped — the car parks are still on the map');
+    } else {
+      console.warn('carpark availability', err);
+      toast('Could not reach HDB for the car park counts');
+    }
+  } finally {
+    state.carparkLoading = false;
+    state.carparkAbort = null;
+    renderCarparkLive();
+  }
+}
+
 function renderPoiNote() {
   const total = Object.values(state.pois).reduce((n, list) => n + list.length, 0);
   const radii = Object.values(MAX_OFFSET_M);
   const fromScdf = (state.pois.aed || []).filter(p => p.source === 'scdf').length;
   const fromNParks = Object.values(state.pois)
     .reduce((n, list) => n + list.filter(p => p.source === 'nparks').length, 0);
+  const fromHdb = (state.pois.parking || []).filter(p => p.source === 'hdb').length;
   $('#poi-note').textContent = total
     ? `Within ${Math.min(...radii)}–${Math.max(...radii)} m of the route, depending on the kind. `
       + 'Data © OpenStreetMap contributors'
       + (fromScdf ? `; ${fromScdf} AEDs © Singapore Civil Defence Force` : '')
       + (fromNParks ? `; ${fromNParks} park amenities © National Parks Board` : '')
-      + (fromScdf || fromNParks ? ', via data.gov.sg.' : '.')
+      + (fromHdb ? `; ${fromHdb} car parks © Housing & Development Board` : '')
+      + (fromScdf || fromNParks || fromHdb ? ', via data.gov.sg.' : '.')
     // An empty list is worth a sentence: it is as likely to mean nobody has
     // mapped this valley as it is to mean there is no water on the route, and
     // a walker planning round it should know which claim the app is making.
@@ -1190,17 +1278,28 @@ async function enableTrails(box) {
 
 /** The OpenStreetMap footpath search: everything NParks does not survey. */
 async function searchTrails(box, { adding = false } = {}) {
-  if (state.trailsLoading) return;
+  // The public mirrors can take minutes. A tap while it is working stops it —
+  // the official trails, if they are already drawn, stay exactly as they are.
+  if (state.trailsLoading) {
+    state.trailsAbort?.abort(new DOMException('Cancelled', 'AbortError'));
+    return;
+  }
+  const abort = new AbortController();
+  state.trailsAbort = abort;
   state.trailsLoading = true;
   renderTrailsOffer();
   if (!adding) $('#trails-c').textContent = 'loading…';
   try {
     const trails = await fetchTrails(state.record.doc, {
+      signal: abort.signal,
       onProgress: (done, total) => {
         const where = total > 1 ? `${done}/${total}` : 'loading…';
         // looked up each time: the layers panel may have been rewritten under
         // us by a facility search finishing, and the old button is gone
-        if (adding) { const b = $('#btn-osm-trails'); if (b) b.textContent = `Asking OpenStreetMap… ${where}`; }
+        if (adding) {
+          const b = $('#btn-osm-trails');
+          if (b) b.textContent = `Asking OpenStreetMap… ${where} · tap to stop`;
+        }
         else $('#trails-c').textContent = where;
       },
     });
@@ -1217,6 +1316,12 @@ async function searchTrails(box, { adding = false } = {}) {
     drawTrails(ways, existing.length ? 'both' : 'osm');
     toast(`${trails.ways.length}${adding ? ' more' : ''} paths drawn — kept for offline`);
   } catch (err) {
+    if (abort.signal.aborted) {
+      toast(adding ? 'Stopped — the official trails are still there'
+        : 'Stopped looking for footpaths');
+      if (!adding && box) box.checked = false;
+      return;
+    }
     console.warn('trails', err);
     if (adding) {
       toast('Could not reach OpenStreetMap — the official trails are still there');
@@ -1227,6 +1332,7 @@ async function searchTrails(box, { adding = false } = {}) {
     }
   } finally {
     state.trailsLoading = false;
+    state.trailsAbort = null;
     renderTrailsOffer();
   }
 }
@@ -1284,9 +1390,10 @@ function renderTrailsOffer() {
   const btn = $('#btn-osm-trails');
   if (!btn) return;
   btn.hidden = state.trailsSource !== 'nparks';
-  btn.disabled = state.trailsLoading;
+  // never disabled: while it is working the button is how you stop it
+  btn.disabled = false;
   btn.textContent = state.trailsLoading
-    ? 'Asking OpenStreetMap…' : 'Add OpenStreetMap paths';
+    ? 'Asking OpenStreetMap… tap to stop' : 'Add OpenStreetMap paths';
 }
 
 /**
@@ -1397,6 +1504,20 @@ async function withOfficialSources(doc, facilities, landmarks, { signal } = {}) 
     } catch (err) {
       if (signal?.aborted) throw err;
       console.warn('nparks register', err);
+    }
+
+    try {
+      if (await coversCarparks(doc.bounds, { signal })) {
+        const { carparks, crowded } = await hdbCarparksAlong(doc, { signal });
+        if (carparks.length) {
+          out.facilities.parking = mergeByProximity(carparks, out.facilities.parking || []);
+          out.added.push(`${carparks.length} HDB car parks`
+            + (crowded ? ` (${crowded} more too close to each other to show)` : ''));
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      console.warn('carpark register', err);
     }
 
     try {

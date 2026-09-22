@@ -13,7 +13,7 @@
 // The routes themselves are not here. They live in IndexedDB, written as they
 // are imported, which is what makes a route usable offline — not this cache.
 
-const VERSION = 'v10';
+const VERSION = 'v11';
 const SHELL_CACHE = `gww-shell-${VERSION}`;
 const TILE_CACHE = `gww-tiles-${VERSION}`;
 const MAX_TILES = 1200;
@@ -50,6 +50,7 @@ const SHELL = [
   'js/aed.js',
   'js/app.js',
   'js/basemaps.js',
+  'js/carparks.js',
   'js/checkpoints.js',
   'js/elevation.js',
   'js/geo.js',
@@ -76,7 +77,7 @@ const SHELL = [
 
 // The registers under data/ are deliberately NOT precached. Between them —
 // SCDF's defibrillators, NParks' park amenities and reserve trails, STB's
-// attractions — they are well over a megabyte of Singapore, and most walkers are not in Singapore;
+// attractions, HDB's car parks — they are well over a megabyte of Singapore, and most walkers are not in Singapore;
 // making every install pay for that would be rude. They are same-origin, so
 // the handler below keeps a copy of each the first time a Singapore route
 // actually asks for it, and from then on they work offline like everything

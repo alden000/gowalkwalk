@@ -1,9 +1,10 @@
 name: Refresh the official Singapore data
 
-# Four registers, published on data.gov.sg irregularly: SCDF's defibrillators
+# Five registers, published on data.gov.sg irregularly: SCDF's defibrillators
 # (roughly once a year, in practice), NParks' reserve amenities (which moved
-# five days before this was written) and reserve trails, and STB's
-# attractions. The check runs
+# five days before this was written) and reserve trails, STB's attractions and
+# HDB's car parks (monthly). HDB's *live* occupancy is not built here — the app
+# fetches that for itself, when asked. The check runs
 # daily anyway, because the cost of asking is a few hundred bytes of metadata
 # each and the cost of being a year stale is a walker sent to a defibrillator
 # that has moved.
@@ -50,6 +51,15 @@ jobs:
       - name: Rebuild the NParks trail geometry if it changed
         run: python3 tools/fetch_trails.py --if-changed
 
+      - name: Rebuild the HDB car park positions if they changed
+        run: python3 tools/fetch_carparks.py --if-changed
+
+      # The SVY21 projection is this repository's own arithmetic, checked
+      # against OneMap, which publishes both coordinates for the same point.
+      # If that ever stops agreeing, the car parks are in the wrong place.
+      - name: Check the SVY21 projection still agrees with OneMap
+        run: python3 tools/fetch_carparks.py --verify
+
       - name: Commit whatever changed
         run: |
           if git diff --quiet -- data/; then
@@ -62,11 +72,13 @@ jobs:
           park = json.load(open('data/nparks-sg.json'))
           stb = json.load(open('data/stb-sg.json'))
           trails = json.load(open('data/trails-sg.json'))
+          cars = json.load(open('data/carparks-sg.json'))
           print(f"SCDF {aed['sourceUpdatedAt'][:10]}: {len(aed['aed']):,} AEDs. "
                 f"NParks {park['sourceUpdatedAt'][:10]}: {len(park['places'])} amenities, "
                 f"{len(park['landmarks'])} landmarks. "
                 f"STB {stb['sourceUpdatedAt'][:10]}: {len(stb['attractions'])} attractions. "
-                f"NParks trails {trails['sourceUpdatedAt'][:10]}: {len(trails['ways'])} lines.")
+                f"NParks trails {trails['sourceUpdatedAt'][:10]}: {len(trails['ways'])} lines. "
+                f"HDB {cars['sourceUpdatedAt'][:10]}: {len(cars['carparks'])} car parks.")
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -74,5 +86,6 @@ jobs:
           git commit -m "Refresh the official Singapore registers
 
           Rebuilt by .github/workflows/refresh-aed.yml from the copies SCDF,
-          NParks and STB publish on data.gov.sg. Data only; no code changed."
+          NParks, STB and HDB publish on data.gov.sg. Data only; no code
+          changed."
           git push
